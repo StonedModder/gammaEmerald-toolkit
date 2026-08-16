@@ -167,6 +167,16 @@ class UEGame:
 
     # ---------------- accessors ----------------
     def resolve_name(self, index, number=0):
+        # FName strings never change for a given (index, number) in a live process.
+        # StarterScene.find used to re-resolve the same class names ~258k times per
+        # bag open (~9s). Cache hits turn that into a dict lookup.
+        cache = getattr(self, "_ncache", None)
+        if cache is None:
+            self._ncache = cache = {}
+        key = (index, number)
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
         block = index >> 16
         off = (index & 0xFFFF) * 2
         blocks_addr = self.namepool["blocks_addr"]
@@ -185,6 +195,8 @@ class UEGame:
         s = body.decode("utf-16-le", errors="replace") if wide else body.decode("utf-8", errors="replace")
         if number > 0:
             s += f"_{number - 1}"
+        if len(cache) < 400000:
+            cache[key] = s
         return s
 
     def item(self, index):
@@ -388,6 +400,127 @@ class UEGame:
             return ok, checks
         except Exception as e:
             return False, [("self_test", False, str(e))]
+
+    # ------------------------------------------------------- fast class scans
+    # class_name() costs three reads and a name resolve PER OBJECT, so asking
+    # "which actors are of class X" over a 258k array took 20-60 seconds and
+    # made wild.state unusable and every hunt step crawl. These two do the same
+    # job by comparing the class POINTER, with the per-object class memoised
+    # against its whole 32-byte FUObjectItem -- a recycled slot changes those
+    # bytes, so a stale entry misses instead of lying.
+    def class_ptr(self, class_name: str):
+        """Address of the UClass with this name, cached. 0 if not loaded."""
+        cache = getattr(self, "_class_ptrs", None)
+        if cache is None:
+            cache = self._class_ptrs = {}
+        hit = cache.get(class_name)
+        if hit and (self.obj_name(hit) or "") == class_name:
+            return hit
+
+        found = self._class_index().get(class_name, 0)
+        if not found and time.time() - getattr(self, "_cls_index_at", 0) > 5.0:
+            # a level that streamed in since the index was built brings new
+            # classes with it, so a miss is worth one rebuild -- rate-limited,
+            # because a class that genuinely is not loaded misses every time
+            self._cls_index = None
+            found = self._class_index().get(class_name, 0)
+        if found:
+            cache[class_name] = found
+        return found
+
+    def _class_index(self):
+        """name -> UClass address for every class with a live instance.
+
+        Searching object-by-object for one name meant a full walk of ~260k
+        objects PER CLASS -- the six classes warmed at attach cost 15s between
+        them, and the first thing the user clicked waited on it. The walk is the
+        expensive part, so this collects the distinct class pointers in one pass
+        and resolves names only for those (a few thousand), which every later
+        lookup then reads for free.
+        """
+        idx = getattr(self, "_cls_index", None)
+        if idx is not None:
+            return idx
+
+        cache = getattr(self, "_obj_class", None)
+        if cache is None:
+            cache = self._obj_class = {}
+        read_u64 = self.gp.read_u64
+        ptrs = set()
+        total = self.gobjects["num_elements"]
+        per = 65536
+        self.refresh()
+        for ci in range(self.gobjects["num_chunks"]):
+            chunk = self._chunks[ci]
+            n = min(per, total - ci * per)
+            if n <= 0:
+                continue
+            items = self.gp.rpm(chunk, n * 32)
+            if not items:
+                continue
+            for k in range(n):
+                base = k * 32
+                o = struct.unpack_from("<Q", items, base)[0]
+                if not o:
+                    continue
+                slot = bytes(items[base:base + 32])
+                cp = cache.get(slot)
+                if cp is None:
+                    cp = read_u64(o + 0x10) or 0
+                    if len(cache) < 500000:
+                        cache[slot] = cp
+                if cp:
+                    ptrs.add(cp)
+
+        idx = {}
+        for cp in ptrs:
+            nm = self.obj_name(cp) or ""
+            if nm:
+                idx.setdefault(nm, cp)
+        self._cls_index = idx
+        self._cls_index_at = time.time()
+        return idx
+
+    def actors_of_class(self, class_name: str, limit: int = 0, skip_cdo=True):
+        """Live objects whose class is exactly `class_name`."""
+        cls = self.class_ptr(class_name)
+        if not cls:
+            return []
+        cache = getattr(self, "_obj_class", None)
+        if cache is None:
+            cache = self._obj_class = {}
+        read_u64 = self.gp.read_u64
+        out = []
+        total = self.gobjects["num_elements"]
+        per = 65536
+        self.refresh()
+        for ci in range(self.gobjects["num_chunks"]):
+            chunk = self._chunks[ci]
+            n = min(per, total - ci * per)
+            if n <= 0:
+                continue
+            items = self.gp.rpm(chunk, n * 32)
+            if not items:
+                continue
+            for k in range(n):
+                base = k * 32
+                o = struct.unpack_from("<Q", items, base)[0]
+                if not o:
+                    continue
+                slot = bytes(items[base:base + 32])
+                cp = cache.get(slot)
+                if cp is None:
+                    cp = read_u64(o + 0x10) or 0
+                    if len(cache) < 500000:
+                        cache[slot] = cp
+                if cp != cls:
+                    continue
+                if skip_cdo and (self.obj_name(o) or "").startswith("Default__"):
+                    continue
+                out.append(o)
+                if limit and len(out) >= limit:
+                    return out
+        return out
 
     def find_class_named(self, name, max_scan=0):
         """Find UClass objects with the given name."""

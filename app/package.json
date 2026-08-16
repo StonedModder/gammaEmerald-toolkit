@@ -1,12 +1,53 @@
 {
   "name": "gamma-toolkit",
-  "version": "0.1.0",
+  "version": "0.0.2",
   "private": true,
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --win portable",
+    "pack": "electron-builder --dir"
   },
   "devDependencies": {
-    "electron": "^37.2.0"
+    "electron": "^37.2.0",
+    "electron-builder": "^24.13.3"
+  },
+  "description": "Desktop toolkit for Pokemon Gamma Emerald: shiny hunting, encounter odds, and an on-demand asset browser.",
+  "author": "StonedModder",
+  "license": "MIT",
+  "build": {
+    "appId": "com.stonedmodder.gammaemerald-toolkit",
+    "productName": "gammaEmerald-toolkit",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist-daemon/gamma-daemon.exe",
+        "to": "daemon/gamma-daemon.exe"
+      }
+    ],
+    "asar": true,
+    "forceCodeSigning": false,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "gammaEmerald-toolkit-portable.exe"
+    },
+    "directories": {
+      "output": "../dist"
+    }
   }
 }

@@ -37,12 +37,22 @@ tools/binkadec/
 *_aes.key
 ea-AES.txt
 
+# --- local reference material ------------------------------------------------
+# Cheat scripts kept locally to learn from. Not part of the toolkit and not
+# mine to publish.
+cheatExamples/
+
 # --- build artifacts --------------------------------------------------------
 node_modules/
 dist/
+dist-daemon/
 build/
+build-daemon/
 release/
+_pack-*/
 *.spec
+# ...except the PyInstaller recipe for the portable daemon, which IS the build
+!daemon.spec
 __pycache__/
 *.py[cod]
 .venv/

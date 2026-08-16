@@ -15,7 +15,9 @@
     <button role="tab" data-pane="hunt" aria-selected="true">Hunt</button>
     <button role="tab" data-pane="cheats" aria-selected="false">Cheats</button>
     <button role="tab" data-pane="assets" aria-selected="false">Assets</button>
+    <button role="tab" data-pane="tools" aria-selected="false">Tools</button>
   </nav>
+  <div class="party-bar" id="partyBar" hidden></div>
   <div class="link">
     <span class="pip" id="pip" data-on="false"></span>
     <span id="linkText">not attached</span>
@@ -159,16 +161,65 @@
 
   <!-- ========================================================= CHEATS === -->
   <section class="pane scroll" id="pane-cheats" hidden>
-    <div class="wrap">
-      <div class="card">
+    <div class="wrap cheats">
+
+      <div class="card cheat" id="encCard" data-on="false">
+        <div class="cheat-head">
+          <div>
+            <h2>Wild encounter</h2>
+            <p class="hint">
+              Pick a Pokémon, then flip the switch — the next wild encounter is
+              that species. Turn it off after the catch.
+            </p>
+          </div>
+          <label class="sw" title="Force encounter">
+            <input type="checkbox" id="encOn" disabled>
+            <span class="track"><i></i></span>
+          </label>
+        </div>
+        <div class="enc-sel">
+          <img id="encPreview" alt="" hidden>
+          <div class="enc-sel-meta">
+            <b id="encSelName">Pick a Pokémon</b>
+            <div class="row">
+              <span class="dex" id="encDex" hidden></span>
+              <label class="chk"><input type="checkbox" id="encShiny" disabled> always shiny</label>
+            </div>
+          </div>
+        </div>
+        <input class="act enc-search" id="encSearch" type="search"
+               placeholder="Search Pokémon…" aria-label="Search Pokémon" disabled>
+        <div class="enc-grid" id="encGrid">
+          <div class="empty tight">Choose a game on the Hunt tab to load sprites.</div>
+        </div>
+        <p class="hint" id="encHint">Attach to enable the hook.</p>
+      </div>
+
+      <div class="card cheat" id="partyCard">
+        <div class="cheat-head">
+          <div>
+            <h2>Party shiny</h2>
+            <p class="hint">
+              Writes the persistent flag on every copy of that Pokemon.
+              Close and reopen the party card, then make a normal in-game save.
+            </p>
+          </div>
+          <button class="act" id="btnPartyScan" disabled>Find party</button>
+        </div>
+        <div class="party-slots" id="partySlots">
+          <div class="empty tight">Find the party after you attach.</div>
+        </div>
+        <p class="hint" id="partyHint"></p>
+      </div>
+
+
+      <div class="card cheat">
         <h2>Blueprint shiny constants</h2>
         <p class="hint">
           The <code>EX_FloatConst</code> odds baked into Blueprint bytecode, used by
           wild encounters and battles. The <b>Encounter odds</b> control on the Hunt
-          tab drives these; this tab is the raw view of every site.
-          These are <b>not</b> the starter roll &mdash; that is a flag on
-          <code>BP_GE_PickStarterPlayer_C</code>, and <code>ShinyRate</code> was
-          tested and does <b>not</b> affect it.
+          tab drives these; this is the raw view of every site.
+          These are <b>not</b> the starter roll.
         </p>
         <div class="row">
           <button class="act" id="btnScan" disabled>Scan</button>
@@ -178,13 +229,11 @@
           <span class="spacer"></span>
           <span class="hint" id="scanHint">Not scanned.</span>
         </div>
-      </div>
-      <div class="card">
-        <h2>Sites</h2>
         <div id="sitesWrap">
-          <div class="empty"><b>Nothing scanned yet</b>Scan to list every patch site the game exposes.</div>
+          <div class="empty tight">Scan to list every patch site the game exposes.</div>
         </div>
       </div>
+
     </div>
   </section>
 
@@ -220,6 +269,7 @@
         </div>
         <div class="row nowrap">
           <button class="act" id="btnPlay" disabled hidden>Play cry</button>
+          <button class="act" data-tone="shiny" id="btnTravel" hidden>Travel here</button>
           <button class="act" id="btnExtractOne" disabled>Extract</button>
           <button class="act primary" id="btnExtractAll" disabled>Extract all</button>
         </div>
@@ -245,6 +295,73 @@
       <div class="stage-foot"><span class="hint" id="assetHint">Select a build on the Hunt tab to read a different version.</span></div>
     </div>
   </section>
+
+  <section class="pane scroll" id="pane-tools" hidden>
+    <div class="card" id="saveCard">
+      <div class="cheat-head">
+        <div>
+          <h2>Save backups</h2>
+          <p class="hint">
+            Copies the game's save folder. Keep as many as you like — back up
+            before a trade, an evolution, or anything you might want to undo.
+          </p>
+        </div>
+        <button class="act primary" id="btnBackup">Back up now</button>
+      </div>
+
+      <div class="save-meta">
+        <div><span class="k">Save folder</span><span class="v" id="saveDir">—</span></div>
+        <div><span class="k">Last written</span><span class="v" id="saveWhen">—</span></div>
+        <div><span class="k">Size</span><span class="v" id="saveSize">—</span></div>
+      </div>
+
+      <label class="lbl" for="backupLabel">Name this backup</label>
+      <input class="act" id="backupLabel" placeholder="e.g. before Petalburg gym"
+             maxlength="60" aria-label="Backup name">
+
+      <p class="warn" id="saveWarn" hidden></p>
+
+      <div class="backups" id="backupList">
+        <div class="empty tight">No backups yet.</div>
+      </div>
+      <p class="hint" id="saveHint"></p>
+    </div>
+
+    <div class="card" id="moneyCard">
+      <div class="cheat-head">
+        <div>
+          <h2>Money</h2>
+          <p class="hint">
+            Reads and sets the player's money directly. Back up your save first
+            if you want to be able to put it back.
+          </p>
+        </div>
+        <div class="money-now"><span id="moneyNow">&mdash;</span></div>
+      </div>
+      <div class="row">
+        <input class="act" id="moneyInput" type="number" min="0" max="999999999"
+               step="1" placeholder="new amount" aria-label="New money amount" disabled>
+        <button class="act primary" id="btnMoneySet" disabled>Set money</button>
+        <button class="act" id="btnMoneyRead" disabled>Refresh</button>
+      </div>
+      <p class="hint" id="moneyHint">Attach on the Hunt tab to read your money.</p>
+    </div>
+  </section>
+
+  <!-- Confirmation for the things that cannot be undone. Inline rather than a
+       native dialog: a browser confirm() blocks the renderer and looks nothing
+       like the rest of the app. -->
+  <div class="modal-wrap" id="modal" hidden>
+    <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="modalTitle">
+      <h3 id="modalTitle">Are you sure?</h3>
+      <p id="modalBody"></p>
+      <p class="modal-note" id="modalNote" hidden></p>
+      <div class="modal-row">
+        <button class="act" id="modalCancel">Cancel</button>
+        <button class="act" data-tone="danger" id="modalOk">Confirm</button>
+      </div>
+    </div>
+  </div>
 
 </main>
 

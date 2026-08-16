@@ -8,24 +8,93 @@ const readline = require('readline');
 let win = null;
 let daemon = null;
 let nextId = 1;
+let quitting = false;
 const pending = new Map();
 
 /** Frozen binary when packaged, plain Python in development. */
+/* Where the daemon lives depends entirely on how this was packaged, and every
+   layout below has been seen in the wild: a frozen exe under resources/, one
+   beside the app exe, or plain source next to app/. __dirname is inside
+   app.asar when packaged, so a script path through it is not executable --
+   asar.unpacked is checked for that reason. */
 function daemonCommand() {
-  const frozen = path.join(process.resourcesPath || '', 'daemon', 'gamma-daemon.exe');
-  if (fs.existsSync(frozen)) return { cmd: frozen, args: [], cwd: path.dirname(frozen) };
-  const script = path.join(__dirname, '..', 'daemon', 'main.py');
-  const py = process.env.GAMMA_PYTHON || 'python';
-  return { cmd: py, args: ['-u', script], cwd: path.dirname(script) };
+  const res = process.resourcesPath || '';
+  const exeDir = path.dirname(app.getPath('exe'));
+  const frozenNames = ['gamma-daemon.exe', 'gammaEmerald-daemon.exe'];
+  const frozenDirs = [
+    path.join(res, 'daemon'), res,
+    path.join(exeDir, 'daemon'), exeDir,
+    path.join(__dirname, '..', 'daemon'),
+  ];
+  for (const dir of frozenDirs) {
+    for (const name of frozenNames) {
+      const exe = path.join(dir, name);
+      if (fs.existsSync(exe)) return { cmd: exe, args: [], cwd: path.dirname(exe) };
+    }
+  }
+
+  const scripts = [
+    path.join(res, 'app.asar.unpacked', 'daemon', 'main.py'),
+    path.join(res, 'daemon', 'main.py'),
+    path.join(exeDir, 'daemon', 'main.py'),
+    path.join(__dirname, '..', 'daemon', 'main.py'),
+  ];
+  // "python" is not always on PATH on Windows even when Python is installed --
+  // the py launcher often is, and the Store build installs python3. Each is
+  // tried in turn when the previous one fails to spawn.
+  const pys = process.env.GAMMA_PYTHON
+    ? [process.env.GAMMA_PYTHON] : ['python', 'py', 'python3'];
+  for (const script of scripts) {
+    if (fs.existsSync(script)) {
+      return { cmd: pys[0], args: ['-u', script], cwd: path.dirname(script),
+               fallbacks: pys.slice(1) };
+    }
+  }
+  return { cmd: pys[0], args: ['-u', scripts[scripts.length - 1]],
+           cwd: __dirname, missing: true, fallbacks: [] };
 }
 
 function toRenderer(channel, payload) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+  // The frame can be torn down between the isDestroyed() check and the send --
+  // during shutdown the daemon's exit event lands exactly there, and the throw
+  // escapes a child_process handler where nothing can catch it.
+  if (quitting || !win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  try { win.webContents.send(channel, payload); } catch { /* window is going away */ }
 }
 
-function startDaemon() {
-  const { cmd, args, cwd } = daemonCommand();
-  daemon = spawn(cmd, args, { cwd, windowsHide: true });
+function startDaemon(override) {
+  const found = daemonCommand();
+  const { args, cwd, missing } = found;
+  const cmd = override || found.cmd;
+  const fallbacks = override
+    ? found.fallbacks.slice(found.fallbacks.indexOf(override) + 1)
+    : found.fallbacks;
+  if (missing) {
+    toRenderer('daemon-event', { event: 'log', data: { line:
+      'daemon not found next to the app; looked for gamma-daemon.exe and daemon/main.py' } });
+  }
+  const env = { ...process.env };
+  const saved = readSettings().gameExe;
+  if (saved) env.GAMMA_GAME_EXE = saved;
+  env.GAMMA_CACHE = path.join(app.getPath('userData'), 'cache');
+  daemon = spawn(cmd, args, {
+    cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  // An unhandled 'error' here takes the whole app down with no window and no
+  // message -- which is exactly what a user without Python on PATH would see.
+  daemon.on('error', (err) => {
+    daemon = null;
+    if (err.code === 'ENOENT' && fallbacks.length) {
+      return startDaemon(fallbacks[0]);   // try the next interpreter
+    }
+    toRenderer('daemon-event', { event: 'log', data: { line:
+      err.code === 'ENOENT'
+        ? `could not start the daemon: "${cmd}" was not found. Install Python 3.11+ `
+          + 'and make sure it is on PATH, or set GAMMA_PYTHON to python.exe.'
+        : `could not start the daemon: ${err.message}` } });
+    toRenderer('daemon-event', { event: 'status', data: { attached: false } });
+  });
 
   readline.createInterface({ input: daemon.stdout }).on('line', (line) => {
     let msg;
@@ -48,10 +117,6 @@ function startDaemon() {
     pending.clear();
     toRenderer('daemon-event', { event: 'exit', data: { code } });
   });
-
-  daemon.on('error', (err) => {
-    toRenderer('daemon-event', { event: 'log', data: { line: 'daemon failed to start: ' + err.message } });
-  });
 }
 
 function call(method, params) {
@@ -71,6 +136,8 @@ function createWindow() {
     width: 1180, height: 800, minWidth: 940, minHeight: 640,
     backgroundColor: '#151826',
     show: false,
+    fullscreen: false,
+    simpleFullscreen: false,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -102,7 +169,15 @@ function createWindow() {
           `document.querySelector('nav button[data-pane="${tab}"]').click(); true`);
       }
       const js = (process.argv.find((a) => a.startsWith('--eval=')) || '').slice(7);
-      if (js) await win.webContents.executeJavaScript(js + '; true');
+      if (js) {
+        // print what the snippet evaluated to; discarding it made --eval
+        // useless for actually checking the UI's state
+        try {
+          const out = await win.webContents.executeJavaScript(
+            `(async () => { ${js} })()`);
+          process.stderr.write('[eval] ' + JSON.stringify(out) + '\n');
+        } catch (e) { process.stderr.write('[eval error] ' + e.message + '\n'); }
+      }
       const find = (process.argv.find((a) => a.startsWith('--find=')) || '').split('=')[1];
       if (find) {
         await new Promise((r) => setTimeout(r, 6000));
@@ -122,7 +197,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => { startDaemon(); createWindow(); });
-app.on('window-all-closed', () => { if (daemon) daemon.kill(); app.quit(); });
+app.on('before-quit', () => { quitting = true; });
+app.on('window-all-closed', () => { quitting = true; if (daemon) daemon.kill(); app.quit(); });
 
 /* Settings live in Electron's userData, so the chosen game path survives a
    restart. The built-in specs point at the author's drive; without this the app

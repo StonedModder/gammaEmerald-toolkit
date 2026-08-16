@@ -100,13 +100,39 @@ class StarterScene:
         self.addr = addr
 
     @classmethod
+    def _from_obj(cls, game, o):
+        if (game.class_name(o) or "") != STARTER_SCENE_CLASS:
+            return None
+        if (game.obj_name(o) or "").startswith("Default__"):
+            return None
+        return cls(game, o)
+
+    @classmethod
+    def find_in_level(cls, game, layout, level):
+        """Scan ULevel::Actors (hundreds), not GUObjectArray (258k)."""
+        ap = game.gp.read_u64(level + layout.level_actors)
+        cnt = game.gp.read_u32(level + layout.level_actors_count)
+        if not ap or not (0 < cnt < 100000):
+            return None
+        raw = game.gp.rpm(ap, cnt * 8)
+        if not raw:
+            return None
+        for i in range(cnt):
+            actor = struct.unpack_from("<Q", raw, i * 8)[0]
+            if actor:
+                hit = cls._from_obj(game, actor)
+                if hit:
+                    return hit
+        return None
+
+    @classmethod
     def find(cls, game):
-        for _i, o in game.iter_objects(0):
-            if (game.class_name(o) or "") != STARTER_SCENE_CLASS:
-                continue
-            if (game.obj_name(o) or "").startswith("Default__"):
-                continue                      # skip the CDO
-            return cls(game, o)
+        # pointer-compare scan: resolving a class NAME per object over 258k
+        # objects was seconds per call, and this runs in a poll loop
+        for o in game.actors_of_class(STARTER_SCENE_CLASS, limit=8):
+            hit = cls._from_obj(game, o)
+            if hit:
+                return hit
         return None
 
     def alive(self) -> bool:
@@ -210,24 +236,25 @@ class Player:
 
         Also records UWorld pointers into worlds_out so later lookups can use
         find_in_worlds instead of walking GUObjectArray again.
+
+        Uses the pointer-compare scan rather than resolving a class name per
+        object -- the old form walked 258k objects reading three fields each and
+        took the better part of half a minute.
         """
-        brendan = None
+        if worlds_out is not None:
+            worlds_out.extend(game.actors_of_class("World"))
         fallback = None
-        for _idx, o in game.iter_objects(0):
-            cn = game.class_name(o) or ""
-            if cn == "World" and worlds_out is not None:
-                worlds_out.append(o)
-            hit = cls._from_obj(game, o)
-            if not hit:
-                continue
-            player, kind = hit
-            if kind == "brendan" and brendan is None:
-                brendan = player
-                if worlds_out is None:
-                    return brendan
-            elif kind == "fallback" and fallback is None:
-                fallback = player
-        return brendan or fallback
+        for cname in PAWN_CLASSES:
+            for o in game.actors_of_class(cname):
+                hit = cls._from_obj(game, o)
+                if not hit:
+                    continue
+                player, kind = hit
+                if kind == "brendan":
+                    return player
+                if fallback is None:
+                    fallback = player
+        return fallback
 
     def get(self, prop: str):
         off, kind = BRENDAN[prop]
@@ -361,9 +388,11 @@ class StarterHunter:
         self.reattach = None       # callable(hunter) -> bool, set by the daemon
         self.exe_path = None       # pathlib.Path to PokemonEmerald.exe
         self.scene = None
+        self.worlds = []       # UWorld addrs from attach; used to scan level actors
         self.stats = HuntStats(target=self.starter_id)
         self._stop = False
         self._pawncls = {}     # FUObjectItem bytes -> class ptr, see find_pawn
+        self._scene_wait_t0 = 0.0
 
     def configure(self, starter=None, open_bag=None, force_shiny=None):
         # NB: never touch reattach/exe_path here. Clearing them (as this used to)
@@ -380,11 +409,7 @@ class StarterHunter:
 
     # ------------------------------------------------------------ observation
     def widget_count(self, name: str) -> int:
-        n = 0
-        for _idx, o in self.game.iter_objects(0):
-            if (self.game.class_name(o) or "") == name:
-                n += 1
-        return n
+        return len(self.game.actors_of_class(name, skip_cdo=False))
 
     def wait_for(self, predicate, timeout=15.0, poll=0.25, what="state"):
         end = time.time() + timeout
@@ -530,13 +555,15 @@ class StarterHunter:
             return True                     # already out of the world
         self.stats.status = "soft reset (shift+R)"
         self.emit("reset")
-        self.input._post(0x0100, self.VK_LSHIFT, 0x00000001)
+        self.input.release_alt()
+        from .input import key_lparam
+        self.input._post(0x0100, self.VK_LSHIFT, key_lparam(self.VK_LSHIFT))
         time.sleep(0.08)
-        self.input._post(0x0100, self.VK_R, 0x00000001)
+        self.input._post(0x0100, self.VK_R, key_lparam(self.VK_R))
         time.sleep(0.12)
-        self.input._post(0x0101, self.VK_R, 0xC0000001)
+        self.input._post(0x0101, self.VK_R, key_lparam(self.VK_R, up=True))
         time.sleep(0.08)
-        self.input._post(0x0101, self.VK_LSHIFT, 0xC0000001)
+        self.input._post(0x0101, self.VK_LSHIFT, key_lparam(self.VK_LSHIFT, up=True))
         # the pawn is destroyed on the way out -- cheapest possible confirmation
         return self.wait_for(lambda: not self.in_world(), timeout=timeout,
                              poll=0.3, what="soft reset")
@@ -600,7 +627,7 @@ class StarterHunter:
                 time.sleep(0.25)
             self.stats.phase("load", time.time() - t)
             if self.player and self.player.alive():
-                time.sleep(1.0)              # let actors finish spawning
+                time.sleep(0.35)             # bag is talkable; scene wait covers the rest
                 self.scene = None
                 # NB: do NOT clear _clscache here. Blueprint classes are loaded
                 # once per process and keep their address across save loads, but
@@ -619,13 +646,17 @@ class StarterHunter:
         self.stats.status = "opening the bag"
         self.emit("attempt", {"starter": self.starter_id})
 
-        if self.open_bag:
-            self.input.tap("enter", settle=1.2)
-
-        # wait for the starter controller to exist, then re-find it each attempt:
-        # it is a fresh object after every reload, so a cached pointer goes stale
+        # One Enter, then poll. Do NOT re-tap while waiting: extra Enter walks
+        # the bag dialogue and can accept Treecko. The old 1.2s settle plus a
+        # 9s GUObjectArray name-walk is what made the first bag open feel stuck
+        # — especially after a reset, when the first scan started before the
+        # suitcase actor existed and had to run again.
         self.scene = None
-        if not self.wait_for(self._find_scene, timeout=20, poll=0.35,
+        self._scene_wait_t0 = time.time()
+        if self.open_bag:
+            self.input.tap("enter", settle=0.08)
+
+        if not self.wait_for(self._find_scene, timeout=12, poll=0.05,
                              what="starter screen"):
             raise RuntimeError("starter screen did not open")
 
@@ -666,14 +697,59 @@ class StarterHunter:
             self.stats.status = "claimed " + self.starter_id
         return shiny
 
+    def _levels_to_scan(self):
+        """ULevels that can hold the suitcase actor: pawn outer + world persistent."""
+        levels = []
+        addr = self.player.addr if self.player else 0
+        for _ in range(8):
+            if not addr:
+                break
+            outer = self.gp.read_u64(addr + self.L.obj_outer)
+            if not outer:
+                break
+            cn = self.game.class_name(outer) or ""
+            if cn == "Level":
+                levels.append(outer)
+            elif cn == "World":
+                pl = self.gp.read_u64(outer + self.L.world_persistent_level)
+                if pl:
+                    levels.append(pl)
+            addr = outer
+        for w in self.worlds or ():
+            try:
+                pl = self.gp.read_u64(w + self.L.world_persistent_level)
+                if pl:
+                    levels.append(pl)
+            except Exception:
+                continue
+        seen = set()
+        out = []
+        for lv in levels:
+            if lv and lv not in seen:
+                seen.add(lv)
+                out.append(lv)
+        return out
+
     def _find_scene(self):
         """Locate the live starter controller.
 
-        MEASURED, do not "optimise" this into a bounded newest-first scan the way
-        find_pawn works: the starter scene is NOT in the recent slots, so a bounded
-        scan misses every time and only delays the real search. Trying it took the
-        roll phase from 9.3s to 25s.
+        Prefer ULevel::Actors (hundreds of pointers, milliseconds). A full
+        GUObjectArray walk with class_name() is ~9s and is how the first bag
+        open of a cycle used to stall: the scan started before the actor
+        existed, missed, then ran again.
+
+        Do not replace this with a bounded newest-first GObjects scan — the
+        suitcase is not in the recent slots, and that path was measured at 25s.
         """
+        for level in self._levels_to_scan():
+            s = StarterScene.find_in_level(self.game, self.L, level)
+            if s:
+                self.scene = s
+                return True
+        # Unknown sublevel, or the pawn outer chain did not yield a Level yet.
+        # Wait a beat so a slow walk cannot hide an actor that just spawned.
+        if time.time() - self._scene_wait_t0 < 1.0:
+            return False
         s = StarterScene.find(self.game)
         if s:
             self.scene = s
@@ -760,20 +836,9 @@ class StarterHunter:
             neg = self._clsmiss = {}
         if time.time() - neg.get(class_name, 0) < 5.0:
             return 0
-        found = 0
-        for _i, o in self.game.iter_objects(0):
-            if (self.game.obj_name(o) or "") != class_name:
-                continue
-            # widget blueprints are WidgetBlueprintGeneratedClass, not
-            # BlueprintGeneratedClass -- filtering on the latter finds nothing
-            cn = self.game.class_name(o) or ""
-            if cn.endswith("GeneratedClass") or cn == "Class":
-                found = o
-                break
-        # NEVER cache a miss. During a relaunch this is called while the game is
-        # still booting, when the class genuinely does not exist yet -- caching the
-        # 0 made every later check fail, so the main-menu detection never fired and
-        # each reset burned a 45s timeout.
+        # the shared lookup caches the UClass address and validates it, so this
+        # no longer walks the whole object array on every miss
+        found = self.game.class_ptr(class_name)
         if found:
             cache[class_name] = found
             neg.pop(class_name, None)
@@ -877,8 +942,9 @@ class StarterHunter:
             pass
         time.sleep(3.0)
         try:
-            import subprocess
-            subprocess.Popen([str(self.exe_path)], cwd=str(self.exe_path.parent))
+            from .versions import spawn_game, resolve_game_binary
+            self.exe_path = resolve_game_binary(self.exe_path)
+            spawn_game(self.exe_path)
         except Exception as e:
             self.emit("error", {"error": "relaunch failed: %r" % (e,)})
             return False

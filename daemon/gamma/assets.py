@@ -28,8 +28,31 @@ from . import versions
 from .versions import find_oodle
 from .legacy_uasset import parse_package, parse_paper_flipbook
 
-BINKADEC = Path(__file__).resolve().parents[2] / "tools" / "binkadec" / "binkadec.exe"
-FFMPEG = "ffmpeg"
+from . import resources
+
+# Resolved at call time, not import time: a packaged exe has no stable path
+# relative to this source file, and the tools may be installed after launch.
+def _binkadec():
+    return resources.binkadec()
+
+
+def _ffmpeg():
+    return resources.ffmpeg()
+
+
+def _require_ffmpeg():
+    """ffmpeg path, or a message naming what to install.
+
+    Without this the failure is subprocess's "[WinError 2] The system cannot
+    find the file specified", which tells a user nothing -- and ffmpeg is the
+    one dependency most likely to be missing on a fresh machine.
+    """
+    if not resources.have_ffmpeg():
+        raise RuntimeError(
+            "ffmpeg was not found. Install it (winget install Gyan.FFmpeg), put "
+            "it next to the app, or set GAMMA_FFMPEG. It is needed for GIF and "
+            "MP3 output.")
+    return resources.ffmpeg()
 
 # Legacy cooked packages end with this tag. It sits AFTER the inline pixel data,
 # so any tail slice has to drop it first.
@@ -52,7 +75,11 @@ CATEGORIES = [
     ("ui",        "UI",         "SPRITES/UI/",        1, "sprite"),
     ("fx",        "Effects",    "SPRITES/FX/",        1, "sprite"),
     ("buildings", "Buildings",  "MODELS/BUILDINGS/",  1, "model"),
-    ("maps",      "Maps",       "MODELS/MAPS/",       1, "model"),
+    ("maps",      "Map props",  "MODELS/MAPS/",       1, "model"),
+    # The playable levels. These are .umap files, not textures -- "Maps"
+    # previously showed only the static meshes in MODELS/MAPS, which is why
+    # looking for a map found scenery and no map.
+    ("levels",    "Levels",     "MAPS/",              1, "level"),
     ("cries",     "Cries",      "SOUNDS/CRIES/",      0, "audio"),
     ("music",     "Music",      "SOUNDS/OST/",        0, "audio"),
     ("sfx",       "Sound FX",   "SOUNDS/SFX/",        0, "audio"),
@@ -85,6 +112,16 @@ class AssetLibrary:
     def reader(self):
         if self._reader is not None:
             return self._reader
+        # Say what is wrong before something deep in the reader raises a bare
+        # FileNotFoundError naming a path the user has never heard of. On a
+        # fresh machine the built-in spec points at the author's drive.
+        wanted = self.spec.pak if self.spec.container == "pak" else self.spec.utoc
+        if not wanted or not Path(wanted).is_file():
+            raise RuntimeError(
+                "no game data found. Use “Choose game…” and pick "
+                "PokemonEmerald.exe — everything else is derived from it. "
+                "(looked for %s)" % (wanted or "a .pak/.utoc"))
+
         if self.spec.container == "pak":
             from .pak import PakReader
             from .iostore import Oodle
@@ -153,6 +190,25 @@ class AssetLibrary:
                             "kind": kind, "count": n})
         return out
 
+    def levels(self, query: str = "", limit: int = 400):
+        """Every playable level (.umap), newest naming kept as-is."""
+        rx = re.compile(re.escape(query), re.I) if query else None
+        out = []
+        for p in self.paths():
+            if not p.lower().endswith(".umap"):
+                continue
+            name = p.rsplit("/", 1)[-1][:-len(".umap")]
+            if rx and not rx.search(name):
+                continue
+            rel = p.split("/Content/", 1)[-1]
+            out.append({"id": p, "name": name, "kind": "level", "count": 1,
+                        "group": (rel.rsplit("/", 1)[0][len("MAPS/"):]
+                                  if rel.startswith("MAPS/") and "/" in rel[len("MAPS/"):]
+                                  else rel.rsplit("/", 1)[0]),
+                        "package": "/Game/" + rel[:-len(".umap")]})
+        out.sort(key=lambda e: (e["group"], e["name"]))
+        return {"total": len(out), "subjects": out[:limit]}
+
     def subjects(self, category: str, query: str = "", limit: int = 500):
         """The named things in a category: a Pokemon, a trainer, a building.
 
@@ -160,6 +216,8 @@ class AssetLibrary:
         animation frame. A subject is the folder a person would name.
         """
         cid, label, prefix, depth, kind = self._cat(category)
+        if cid == "levels":
+            return self.levels(query, limit)
         rx = re.compile(re.escape(query), re.I) if query else None
         subs = {}
         for p in self.paths():
@@ -187,13 +245,21 @@ class AssetLibrary:
             name = parts[d - 1]
             if rx and not rx.search(name):
                 continue
-            e = subs.get(name)
+            # One Pokemon lives in two folders -- its battle sprites and its
+            # FOLLOWERS overworld sheet -- and the game spells them with
+            # different casing ("ALTARIA" vs "Altaria"). Keyed by the exact name
+            # that listed 32 of them twice; keyed by name alone it silently kept
+            # only whichever folder was walked first. Merge on the folded name
+            # and remember every folder the subject occupies.
+            key = name.lower()
+            folder = p[:i + len(prefix)] + "/".join(parts[:d])
+            e = subs.get(key)
             if e is None:
-                e = subs[name] = {
-                    "id": p[:i + len(prefix)] + "/".join(parts[:d]),
-                    "name": name, "kind": kind, "count": 0,
-                    "group": parts[d - 2] if d > 1 else "",
+                e = subs[key] = {
+                    "id": folder, "dirs": {}, "name": name, "kind": kind,
+                    "count": 0, "group": parts[d - 2] if d > 1 else "",
                 }
+            e["dirs"][folder] = e["dirs"].get(folder, 0) + 1
             e["count"] += 1
 
         # Some categories have no folder per subject -- Items is 12 loose files
@@ -207,6 +273,14 @@ class AssetLibrary:
                 subs[label] = {"id": root, "name": label, "kind": kind,
                                "count": 0, "group": ""}
                 subs[label]["count"] += 1
+
+        # `id` carries every folder, biggest first, so entries() can show the
+        # battle sprites and the follower sheet under one name.
+        for e in subs.values():
+            dirs = sorted(e.pop("dirs", {}).items(), key=lambda kv: -kv[1])
+            if dirs:
+                e["id"] = "|".join(d for d, _n in dirs)
+                e["name"] = dirs[0][0].rsplit("/", 1)[-1]
 
         rows = sorted(subs.values(), key=lambda e: e["name"].lower())
         return {"total": len(rows), "subjects": rows[:limit]}
@@ -222,8 +296,14 @@ class AssetLibrary:
             return {"total": 0, "subjects": []}
         rx = re.compile(re.escape(query), re.I)
         subs = {}
+        # levels are matched by their own rule; the prefix/depth walk below is
+        # for asset folders and would never surface a .umap
+        for lv in self.levels(query, limit)["subjects"]:
+            subs[("levels", lv["name"])] = lv
         for p in self.paths():
             for cid, label, prefix, depth, kind in CATEGORIES:
+                if cid == "levels":
+                    continue
                 i = p.find(prefix)
                 if i < 0:
                     continue
@@ -260,6 +340,14 @@ class AssetLibrary:
         return {"total": len(rows), "subjects": rows[:limit]}
 
     def entries(self, subject_dir: str):
+        if subject_dir.lower().endswith(".umap"):
+            # A level is not a picture. It has no previewable children; the UI
+            # shows what it is and offers the raw package.
+            name = subject_dir.rsplit("/", 1)[-1][:-len(".umap")]
+            return {"dir": subject_dir,
+                    "entries": [{"kind": "raw", "id": subject_dir,
+                                 "name": name, "count": 1}]}
+
         """What you can actually look at inside a subject.
 
         Three kinds come back: `animation` (a folder of SPR_ frames -> GIF),
@@ -267,16 +355,22 @@ class AssetLibrary:
         materials and Blueprints have no preview, so they are listed as `raw` and
         can only be extracted.
         """
-        pre = subject_dir.rstrip("/") + "/"
+        # A subject can span several folders (see subjects()); they arrive
+        # "|"-joined, biggest first.
+        pres = [d.rstrip("/") + "/" for d in subject_dir.split("|") if d]
+        pre = pres[0]
         anims, images, audio, raw = [], [], [], []
         frame_dirs, fb_dirs = {}, set()
 
         for p in self.paths():
-            if not p.startswith(pre) or not p.lower().endswith(".uasset"):
+            if not p.lower().endswith(".uasset"):
+                continue
+            own = next((x for x in pres if p.startswith(x)), None)
+            if own is None:
                 continue
             d, _, fn = p.rpartition("/")
             up = fn.upper()
-            rel = p[len(pre):-len(".uasset")]
+            rel = p[len(own):-len(".uasset")]
 
             if up.startswith("FB_"):
                 # A flipbook IS the animation: it owns the frame order, the frame
@@ -314,7 +408,8 @@ class AssetLibrary:
                 # sequences, and requiring the underscore split every Poke Ball
                 # animation into a pile of unrelated single images
                 stems.setdefault(re.sub(r"_?\d+$", "", fn), []).append(f)
-            folder = d[len(pre):] or subject_dir.rsplit("/", 1)[-1]
+            own = next((x for x in pres if d.startswith(x.rstrip("/"))), pre)
+            folder = d[len(own):].strip("/") or own.rstrip("/").rsplit("/", 1)[-1]
             multi = len(stems) > 1
             for stem, group in stems.items():
                 name = ("%s/%s" % (folder, stem)) if multi and folder else (folder or stem)
@@ -345,7 +440,7 @@ class AssetLibrary:
 
         # Cosmetic: the cooker's prefixes and the repeated subject name are noise
         # in a list that already sits under that subject's heading.
-        subject = subject_dir.rstrip("/").rsplit("/", 1)[-1]
+        subject = pre.rstrip("/").rsplit("/", 1)[-1]
         for e in rows:
             n = re.sub(r"^(SPR_|FB_|T_|SND_)", "", e["name"])
             n = re.sub(r"^%s[/_]" % re.escape(subject), "", n, flags=re.I)
@@ -389,7 +484,8 @@ class AssetLibrary:
     # produced recognisable shapes in rainbow noise), wrap the payload in a DDS
     # header and hand it to ffmpeg, which is already a dependency and does this
     # in C.
-    FOURCC = {b"PF_DXT1": b"DXT1", b"PF_DXT5": b"DXT5"}
+    # ATI2 is the fourcc ffmpeg knows BC5 by
+    FOURCC = {b"PF_DXT1": b"DXT1", b"PF_DXT5": b"DXT5", b"PF_BC5": b"ATI2"}
 
     @classmethod
     def dds_bytes(cls, w: int, h: int, payload: bytes, fmt: bytes) -> bytes | None:
@@ -492,7 +588,7 @@ class AssetLibrary:
         src, dst = tmp / "t.dds", tmp / "t.raw"
         try:
             src.write_bytes(dds)
-            r = _run([FFMPEG, "-hide_banner", "-v", "error", "-y", "-i", str(src),
+            r = _run([_ffmpeg(), "-hide_banner", "-v", "error", "-y", "-i", str(src),
                       "-f", "rawvideo", "-pix_fmt", "bgra", str(dst)])
             if r.returncode != 0 or not dst.exists():
                 return None
@@ -613,8 +709,6 @@ class AssetLibrary:
             return self.texture(src, blobs) if src else None
         w, h = dims
 
-        if fmt == b"PF_BC5":
-            return None                           # normal maps, nothing to show
         need = (w * h * 4 if fmt == b"PF_B8G8R8A8"
                 else self._payload_size(w, h, fmt))
 
@@ -658,6 +752,7 @@ class AssetLibrary:
 
     # ---------------------------------------------------------------- audio
     def audio_mp3(self, path: str, out_path: Path) -> Path | None:
+        _require_ffmpeg()
         blob = self._package_bytes(path)
         stem = path[:-len(".uasset")] if path.lower().endswith(".uasset") else path
         try:                                          # cooked audio may be in .ubulk
@@ -667,7 +762,8 @@ class AssetLibrary:
         p = blob.find(b"ABEU")                       # 'UEBA' little-endian
         if p < 0:
             return None
-        if not BINKADEC.exists():
+        binka = _binkadec()
+        if binka is None:
             raise RuntimeError(
                 "binkadec.exe is missing — audio export needs it. See "
                 "tools/README.md for where to put it.")
@@ -675,10 +771,10 @@ class AssetLibrary:
         raw, wav = tmp / "a.binka", tmp / "a.wav"
         try:
             raw.write_bytes(blob[p:])
-            if _run([str(BINKADEC), "-i", str(raw), "-o", str(wav)]).returncode != 0:
+            if _run([str(binka), "-i", str(raw), "-o", str(wav)]).returncode != 0:
                 return None
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            r = _run([FFMPEG, "-hide_banner", "-v", "error", "-y", "-i", str(wav),
+            r = _run([_ffmpeg(), "-hide_banner", "-v", "error", "-y", "-i", str(wav),
                       "-c:a", "libmp3lame", "-q:a", "4", str(out_path)])
             return out_path if r.returncode == 0 else None
         finally:
@@ -767,12 +863,13 @@ class AssetLibrary:
 
         Cells are SQUARE and tile the sheet exactly, so the answer is the largest
         square size dividing both dimensions that still leaves room for every
-        sub-sprite. The sheet is not always full: NurseJoy is 5 sprites on a 96x96
-        sheet, which is a 3x3 grid of 32x32 with four slots unused.
+        sub-sprite. The sheet is not always full -- NurseJoy is 5 sprites in a
+        3x2 grid, leaving one slot empty.
 
-        Factorising the sprite COUNT instead (the first attempt) cannot express
-        that -- 5 has no grid that divides 96x96 -- so those sheets fell back to
-        showing the whole sheet, which is what the NPCs and Poke Balls looked like.
+        This is the FALLBACK now: sheet_layout goes first, because square cells
+        are an assumption rather than a fact and the character sheets break it.
+        It still decides the sheets whose cell count has no exact grid, which is
+        what the NPCs and Poke Balls needed.
 
         The exact per-sprite rect lives in each UPaperSprite's BakedRenderData,
         which this build does not serialise; this is derived instead.
@@ -788,11 +885,91 @@ class AssetLibrary:
         return None
 
     def sheet_cells(self, tex_path: str) -> int:
-        """How many sub-sprites reference this texture as a sheet."""
+        """How many cells this texture is divided into.
+
+        The count is a property of the SHEET, so it has to be the same no matter
+        which flipbook is being rendered. Counting only the UPaperSprite wrappers
+        undercounts: NPC02 keeps four of them but its flipbooks index cells 0, 4,
+        8 and 12, so the sheet is really 16 cells. Deriving it per-flipbook
+        instead gave each direction its own grid -- Idle_Down then cropped a
+        64x128 block and showed two NPCs side by side.
+        """
+        cache = getattr(self, "_cells", None)
+        if cache is None:
+            cache = self._cells = {}
+        if tex_path in cache:
+            return cache[tex_path]
+
         stem = tex_path[:-len(".uasset")]
         pre = stem + "_Sprite_"
-        return sum(1 for p in self.paths() if p.startswith(pre)
-                   and p.lower().endswith(".uasset"))
+        n = sum(1 for p in self.paths() if p.startswith(pre)
+                and p.lower().endswith(".uasset"))
+
+        # every flipbook sitting beside it that plays from this sheet
+        folder = tex_path.rsplit("/", 1)[0]
+        for fb_path in self.flipbooks_in(folder):
+            fb = self.flipbook(fb_path)
+            if not fb:
+                continue
+            for tex, idx in fb[1]:
+                if tex == tex_path and idx is not None:
+                    n = max(n, idx + 1)
+
+        cache[tex_path] = n
+        return n
+
+    def sheet_layout(self, tex_path: str, w: int, h: int):
+        """(cols, rows) for a sheet, or None.
+
+        _grid assumes SQUARE cells. That is right for the battle sprites, the
+        trainers and the Poke Balls, but wrong for NPC02: 128x256 holding 4x4
+        cells of 32x64, which the square rule cut in half so the Right and Up
+        idles came out blank or headless.
+
+        Nothing in the cooked data states the layout, so it is inferred from the
+        flipbooks. Each facing is its own flipbook, and their first frames are
+        evenly spaced -- NPC02 at 0/4/8/12, Brendan at 0/3/6/9. That spacing is
+        the FRAMES PER FACING, not the column count (reading Brendan's 3 as
+        columns gave 64x36 cells and rendered two half-players side by side), so
+        the sheet holds `last start + spacing` cells. The grid is then whichever
+        exact factorisation of that count tiles the sheet with the most
+        square-ish cell, preferring taller over wider when two are equally far
+        off -- characters are taller than they are wide.
+        """
+        starts = []
+        for fb_path in self.flipbooks_in(tex_path.rsplit("/", 1)[0]):
+            fb = self.flipbook(fb_path)
+            if not fb:
+                continue
+            idx = [i for t, i in fb[1] if t == tex_path and i is not None]
+            if idx:
+                starts.append(min(idx))
+        starts = sorted(set(starts))
+
+        total = 0
+        if len(starts) >= 2:
+            step = starts[1] - starts[0]
+            if step >= 1 and all(b - a == step for a, b in zip(starts, starts[1:])):
+                total = starts[-1] + step
+        total = max(total, self.sheet_cells(tex_path))
+
+        best = None
+        for cols in range(1, total + 1):
+            if total % cols or w % cols:
+                continue
+            rows = total // cols
+            if h % rows:
+                continue
+            cw, ch = w // cols, h // rows
+            # distance from square, symmetric in either direction
+            off = (ch / cw) if cw > ch else (cw / ch)
+            rank = (-off, 0 if cw <= ch else 1)
+            if best is None or rank < best[0]:
+                best = (rank, (cols, rows))
+        if best:
+            return best[1]
+
+        return self._grid(w, h, total) if total > 1 else None
 
     @staticmethod
     def crop_bgra(w, h, bgra, x, y, cw, ch):
@@ -838,6 +1015,8 @@ class AssetLibrary:
             stem = tex[:-len(".uasset")]
             wanted |= {tex, stem + ".uexp", stem + ".ubulk"}
         blobs = self.read_many(wanted)
+        # The layout is per SHEET, not per flipbook -- deriving it from the
+        # frames in hand gave each facing its own grid (see sheet_layout).
         cells = {}
         n = 0
         for tex, idx in frames:
@@ -847,8 +1026,7 @@ class AssetLibrary:
             if idx is not None:
                 w, h, bgra = t
                 if tex not in cells:
-                    total = self.sheet_cells(tex)
-                    cells[tex] = self._grid(w, h, total) if total > 1 else None
+                    cells[tex] = self.sheet_layout(tex, w, h)
                 grid = cells[tex]
                 if grid:
                     cols, rows = grid
@@ -870,6 +1048,7 @@ class AssetLibrary:
         plan = self.anim_plan(target, every=every, max_frames=max_frames)
         if not plan:
             return None
+        _require_ffmpeg()
         rate = max(1.0, float(fps) if fps else plan[0])
         tmp = Path(tempfile.mkdtemp(prefix="gamma_gif_"))
         try:
@@ -878,7 +1057,7 @@ class AssetLibrary:
             out_path.parent.mkdir(parents=True, exist_ok=True)
             vf = ("split[a][b];[a]palettegen=reserve_transparent=1[p];"
                   "[b][p]paletteuse=alpha_threshold=128")
-            r = _run([FFMPEG, "-hide_banner", "-v", "error", "-y",
+            r = _run([_ffmpeg(), "-hide_banner", "-v", "error", "-y",
                       "-framerate", "%.3f" % rate, "-i", str(tmp / "f%04d.png"),
                       "-vf", vf, "-loop", "0", str(out_path)])
             return out_path if r.returncode == 0 and out_path.exists() else None
@@ -889,6 +1068,101 @@ class AssetLibrary:
                 tmp.rmdir()
             except OSError:
                 pass
+
+    def pokemon_roster(self):
+        """Species folder names that have a Front Idle battle sprite."""
+        idx = self._front_index()
+        return [{"name": v["name"]} for v in
+                sorted(idx.values(), key=lambda e: e["name"].lower())]
+
+    def find_front_idle(self, name: str, shiny: bool = False) -> str | None:
+        """Pak path of FB_*Front_Idle for this species, or None."""
+        if not name:
+            return None
+        slot = self._front_index().get(name.strip().lower())
+        if not slot:
+            return None
+        if shiny:
+            return slot["shiny"] or slot["normal"]
+        return slot["normal"] or slot["shiny"]
+
+    def first_frame_png(self, anim_id: str) -> bytes | None:
+        plan = self.anim_plan(anim_id, max_frames=1)
+        if not plan or not plan[1]:
+            return None
+        tex, idx = plan[1][0]
+        t = self.texture(tex)
+        if not t:
+            return None
+        if idx is not None:
+            w, h, bgra = t
+            grid = self.sheet_layout(tex, w, h)
+            if grid:
+                cols, rows = grid
+                cw, ch = w // cols, h // rows
+                t = self.crop_bgra(w, h, bgra,
+                                   (idx % cols) * cw, (idx // cols) * ch, cw, ch)
+        return self.png_from_bgra(*t)
+
+    def _front_index(self):
+        cache = getattr(self, "_fronts", None)
+        if cache is not None:
+            return cache
+        idx = {}
+        for p in self.paths():
+            hit = classify_front_idle(p)
+            if not hit:
+                continue
+            species, shiny, rank = hit
+            slot = idx.setdefault(species.lower(), {
+                "name": species, "normal": None, "shiny": None,
+                "nrank": 99, "srank": 99,
+            })
+            key, rkey = ("shiny", "srank") if shiny else ("normal", "nrank")
+            if slot[key] is None or rank < slot[rkey]:
+                slot[key] = p
+                slot[rkey] = rank
+        self._fronts = idx
+        return idx
+
+
+_FRONT_IDLE = re.compile(r"/FB_[^/]*Front_Idle\.uasset$", re.I)
+_LOWHP = re.compile(r"LowHP", re.I)
+_SKIP_SPECIES = {"FRONT", "BACK", "SHINY", "OVERWORLD", "MALE", "FEMALE", "FOLLOWERS"}
+
+
+def rank_front(path: str) -> int:
+    """Ungendered first, then male, then female."""
+    u = path.replace("\\", "/").upper()
+    if "/MALE/" in u:
+        return 1
+    if "/FEMALE/" in u:
+        return 2
+    return 0
+
+
+def classify_front_idle(path: str):
+    """(species, shiny, rank) for a Front Idle flipbook, else None."""
+    p = path.replace("\\", "/")
+    if not _FRONT_IDLE.search(p) or _LOWHP.search(p):
+        return None
+    marker = "SPRITES/POKEMON/"
+    i = p.upper().find(marker)
+    if i < 0:
+        return None
+    rest = p[i + len(marker):]
+    parts = rest.split("/")
+    if not parts or parts[0].upper() == "FOLLOWERS":
+        return None
+    if len(parts) < 2:
+        return None
+    species = parts[1]
+    if species.upper() in _SKIP_SPECIES:
+        return None
+    upper = [x.upper() for x in parts]
+    shiny = "SHINY" in upper or "SHINY" in parts[-1].upper()
+    return species, shiny, rank_front(p)
+
 
 def data_uri(blob: bytes, mime: str) -> str:
     return "data:%s;base64,%s" % (mime, base64.b64encode(blob).decode("ascii"))

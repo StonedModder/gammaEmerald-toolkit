@@ -7,7 +7,7 @@
 
 const A = {
   ready: false, cat: null, subject: null, entry: null,
-  entries: [], zoom: 4, seq: 0, extracting: false,
+  entries: [], zoom: 4, seq: 0, subjectSeq: 0, loadSeq: 0, extracting: false,
 };
 
 const fmtCount = (n) =>
@@ -15,7 +15,19 @@ const fmtCount = (n) =>
 
 const KIND_TAG = { animation: 'GIF', audio: 'MP3', image: 'PNG', raw: 'RAW' };
 const KIND_LABEL = { animation: 'Animation', image: 'Sprite',
-                     audio: 'Sound', raw: 'Package' };
+                     audio: 'Sound', raw: 'Package', level: 'Level' };
+
+/* Maps you can walk to from where the player is standing. Refreshed when the
+   Levels library is shown, because it depends on the loaded level. */
+let REACHABLE = {};
+
+async function refreshReachable() {
+  try {
+    const r = await rpc('travel.destinations');
+    REACHABLE = {};
+    (r.destinations || []).forEach((d) => { REACHABLE[d.map] = d; });
+  } catch { REACHABLE = {}; }
+}
 
 function assetBusy(on) {
   document.querySelector('#pane-assets .stage').classList.toggle('busy', on);
@@ -45,10 +57,10 @@ async function assetsInit() {
     $('assetSearch').disabled = false;
     assetHint('Nothing is written to disk until you press Extract.');
     if (categories[0]) await pickCategory(categories[0], box.firstChild);
-  } catch (e) {
+    } catch (e) {
     A.ready = false;
     $('cats').innerHTML = '<div class="empty">Could not read the pak.</div>';
-    assetHint('could not open the game container');
+    assetHint(String(e.message || e));
     showError(e);
   }
 }
@@ -71,6 +83,10 @@ function onSearch() {
 }
 
 async function loadSubjects() {
+  // The first library load fetches 600 subjects and then renders a preview.
+  // A search issued while that is still running used to finish FIRST and then
+  // get overwritten by the stale load -- a map showing a Pokemon. Newest wins.
+  const load = ++A.loadSeq;
   const q = $('assetSearch').value.trim();
   // Typing searches the WHOLE library, not the selected category. "Fisherman" is
   // an NPC, not a Pokemon, and searching one category at a time just told you it
@@ -89,6 +105,7 @@ async function loadSubjects() {
     });
   }
 
+  if (load !== A.loadSeq) return;
   const box = $('subjects');
   box.textContent = '';
   if (!subjects.length) {
@@ -122,21 +139,49 @@ async function loadSubjects() {
   $('subjFoot').textContent = q
     ? `${subjects.length} match${subjects.length === 1 ? '' : 'es'}`
     : `${subjects.length} of ${total}`;
+  if (load !== A.loadSeq) return;
   await pickSubject(subjects[0], box.firstChild);
 }
 
 /* ----------------------------------------------------------------- entries */
 async function pickSubject(s, btn) {
+  // Selecting a subject is async (entries, then a preview render). A slow one
+  // finishing late would overwrite whatever the user picked since -- searching
+  // while the first library was still loading left a Pokemon on screen under a
+  // map's name. Newest selection wins.
+  const seq = ++A.subjectSeq;
   A.subject = s;
   document.querySelectorAll('#subjects button').forEach((b) => {
     b.setAttribute('aria-current', String(b === btn));
   });
+
+  // A level is not a picture. It may, however, be somewhere the player can
+  // walk to right now -- that is what the Levels library is for.
+  if (s.kind === 'level') {
+    if (seq !== A.subjectSeq) return;
+    $('entries').textContent = '';
+    A.entries = [];
+    $('btnExtractAll').disabled = true;
+    await refreshReachable();
+    if (seq !== A.subjectSeq) return;
+    const go = REACHABLE[s.name];
+    $('btnTravel').hidden = !go;
+    $('btnTravel').disabled = !go;
+    $('btnTravel').dataset.map = s.name;
+    clearStage(s.name, go
+      ? ` — reachable from here, ${go.distance} units away. Travel walks the player in.`
+      : ' — a playable level, but not reachable from where the player is standing.',
+      'Level');
+    return;
+  }
+  $('btnTravel').hidden = true;
 
   // a sound is its own subject: there is nothing to list, just play it
   if (s.kind === 'audio') {
     A.entries = [{ kind: 'audio', id: s.id, name: s.name }];
   } else {
     const { entries } = await rpc('assets.entries', { dir: s.id });
+    if (seq !== A.subjectSeq) return;
     A.entries = entries;
   }
 
@@ -182,7 +227,12 @@ async function pickSubject(s, btn) {
 }
 
 /* ------------------------------------------------------------------- stage */
-function clearStage(title, why) {
+function clearStage(title, why, kind) {
+  // Invalidate any preview still being decoded. showEntry sets the heading
+  // synchronously and paints the image after its await, so without this a slow
+  // Pokemon GIF finishes late and paints itself over whatever is on screen now
+  // -- which is how a map ended up showing "Abra - Back_Idle".
+  A.seq += 1;
   A.entry = null;
   $('stageImg').hidden = true;
   $('stageImg').removeAttribute('src');
@@ -196,6 +246,11 @@ function clearStage(title, why) {
   $('stageMeta').textContent = '';
   $('btnPlay').hidden = true;
   $('btnExtractOne').disabled = true;
+  // The heading is part of the stage. Leaving it alone meant a subject with no
+  // preview kept the PREVIOUS subject's title -- a map showed "Abra · Back_Idle"
+  // over the words "no preview", which reads as the app being broken.
+  $('stageName').textContent = title;
+  $('stageKind').textContent = kind || 'Preview';
 }
 
 async function showEntry(e, btn) {
@@ -310,6 +365,23 @@ $('zoomer').onclick = (ev) => {
   });
   applyZoom();
 };
+$('btnTravel').onclick = async () => {
+  const map = $('btnTravel').dataset.map;
+  $('btnTravel').disabled = true;
+  assetHint(`walking to ${map}…`);
+  try {
+    const r = await rpc('travel.go', { map });
+    assetHint(r.ok
+      ? `arrived in ${r.map}${r.stuck ? ' — but the player cannot move' : ''}`
+      : `could not travel: ${r.error}`);
+    log(r.ok ? `travelled to ${r.map}` : `travel failed: ${r.error}`, r.ok ? null : 'bad');
+  } catch (e) {
+    showError(e);
+  } finally {
+    $('btnTravel').disabled = false;
+  }
+};
+
 $('btnExtractOne').onclick = () => { if (A.entry) extract([A.entry]).catch(showError); };
 $('btnExtractAll').onclick = () => { if (A.entries.length) extract(A.entries).catch(showError); };
 

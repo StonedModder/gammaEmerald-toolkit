@@ -6,6 +6,7 @@ from ctypes import wintypes
 import struct
 import sys
 
+PROCESS_ALL_ACCESS = 0x001F0FFF
 PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_OPERATION = 0x0008
@@ -14,7 +15,19 @@ TH32CS_SNAPMODULE = 0x8
 TH32CS_SNAPMODULE32 = 0x10
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
+MEM_PRIVATE = 0x20000
+PAGE_READONLY = 0x02
 PAGE_READWRITE = 0x04
+PAGE_WRITECOPY = 0x08
+PAGE_EXECUTE_READ = 0x20
+PAGE_EXECUTE_READWRITE = 0x40
+PAGE_EXECUTE_WRITECOPY = 0x80
+PAGE_GUARD = 0x100
+WRITABLE = {
+    PAGE_READWRITE, PAGE_WRITECOPY,
+    PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY,
+}
+READABLE = WRITABLE | {PAGE_READONLY, PAGE_EXECUTE_READ}
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 psapi = ctypes.WinDLL("psapi", use_last_error=True)
@@ -44,6 +57,17 @@ VirtualFreeEx = kernel32.VirtualFreeEx
 VirtualFreeEx.restype = wintypes.BOOL
 VirtualFreeEx.argtypes = [wintypes.HANDLE, wintypes.LPVOID, ctypes.c_size_t,
                           wintypes.DWORD]
+
+VirtualProtectEx = kernel32.VirtualProtectEx
+VirtualProtectEx.restype = wintypes.BOOL
+VirtualProtectEx.argtypes = [
+    wintypes.HANDLE, wintypes.LPVOID, ctypes.c_size_t, wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD)]
+
+FlushInstructionCache = kernel32.FlushInstructionCache
+FlushInstructionCache.restype = wintypes.BOOL
+FlushInstructionCache.argtypes = [
+    wintypes.HANDLE, wintypes.LPCVOID, ctypes.c_size_t]
 
 CloseHandle = kernel32.CloseHandle
 
@@ -87,9 +111,8 @@ class GameProcess:
                     break
             if self.pid is None:
                 raise RuntimeError(f"process {self.name} not found")
-        self.handle = OpenProcess(
-            PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE,
-            False, self.pid)
+        # ALL_ACCESS: encounter hooks need VirtualProtectEx on executable pages.
+        self.handle = OpenProcess(PROCESS_ALL_ACCESS, False, self.pid)
         if not self.handle:
             raise ctypes.WinError(ctypes.get_last_error())
         self._get_modules()
@@ -182,7 +205,50 @@ class GameProcess:
             ba = mbi.BaseAddress or 0
             if mbi.State == 0x1000:  # MEM_COMMIT
                 yield ba, mbi.RegionSize, mbi.Protect, mbi.Type
-            addr = ba + mbi.RegionSize
+            nxt = ba + mbi.RegionSize
+            if nxt <= addr:
+                break
+            addr = nxt
+
+    def writable_private_regions(self):
+        """Committed private RW heap — party records, species DB, money qword."""
+        for ba, size, protect, typ in self.regions():
+            if (typ == MEM_PRIVATE
+                    and (protect & 0xFF) in WRITABLE
+                    and not (protect & PAGE_GUARD)):
+                yield ba, size
+
+    def write_code(self, address, data):
+        """Write executable bytes: flip the page, write, restore, flush I-cache."""
+        data = bytes(data)
+        old = wintypes.DWORD()
+        if not VirtualProtectEx(self.handle, wintypes.LPVOID(address), len(data),
+                                PAGE_EXECUTE_READWRITE, ctypes.byref(old)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            n = self.wpm(address, data)
+            if n != len(data):
+                raise RuntimeError(f"short code write at {address:#x}")
+            FlushInstructionCache(self.handle, wintypes.LPCVOID(address), len(data))
+        finally:
+            ignored = wintypes.DWORD()
+            VirtualProtectEx(self.handle, wintypes.LPVOID(address), len(data),
+                             old.value, ctypes.byref(ignored))
+
+    def allocate_near(self, site, size=0x1000):
+        """RWX cave within rel32 of `site` so a 5-byte JMP can reach it."""
+        granularity = 0x10000
+        center = site & ~(granularity - 1)
+        for delta in range(granularity, 0x70000000, granularity):
+            for candidate in (center + delta, center - delta):
+                if candidate <= 0:
+                    continue
+                result = VirtualAllocEx(
+                    self.handle, wintypes.LPVOID(candidate), size,
+                    MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)
+                if result:
+                    return int(result)
+        raise RuntimeError("could not allocate a code cave within rel32 range")
 
     def close(self):
         if self.handle:

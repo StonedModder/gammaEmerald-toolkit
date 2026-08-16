@@ -14,9 +14,16 @@ GAMMA_ROOT to wherever the game folders live, or ignore them entirely.
 """
 from __future__ import annotations
 
+import json
 import os
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+# Remembered install, independent of Electron settings. The portable exe
+# extracts to a new temp dir every launch, so the daemon cannot rely on cwd.
+_SETTINGS_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "GammaToolkit"
+_GAME_PATH_FILE = _SETTINGS_DIR / "game.json"
 
 # Where the game folders live, if you keep them together. Overridable, and
 # irrelevant once you have used Choose game... in the app.
@@ -25,9 +32,19 @@ ROOT = Path(os.environ.get("GAMMA_ROOT") or Path.home() / "Gamma Emerald")
 # Oodle is needed only for Oodle-compressed paks. It ships with the engine and
 # is NOT redistributed here -- see tools/README.md. Point GAMMA_OODLE_DLL at a
 # copy, or drop one in tools/.
+def _src_oodle():
+    try:
+        here = Path(__file__).resolve()
+        if len(here.parents) > 2:
+            return here.parents[2] / "tools" / "oodle-data-shared.dll"
+    except (OSError, IndexError):
+        pass
+    return None
+
+
 OODLE_CANDIDATES = [
     Path(os.environ["GAMMA_OODLE_DLL"]) if os.environ.get("GAMMA_OODLE_DLL") else None,
-    Path(__file__).resolve().parents[2] / "tools" / "oodle-data-shared.dll",
+    _src_oodle(),
     ROOT / "re-tools" / "oodle-data-shared.dll",
 ]
 OODLE_CANDIDATES = [p for p in OODLE_CANDIDATES if p is not None]
@@ -91,13 +108,39 @@ class VersionSpec:
 
 
 def find_oodle() -> Path:
-    for p in OODLE_CANDIDATES:
-        if p.exists():
-            return p
+    """Locate oodle-data-shared.dll, or explain where to put it.
+
+    Uses the shared resolver so a packaged exe finds a DLL sitting beside it --
+    the old version looked two directories above this source file, which does
+    not exist once frozen. Also walks up from the saved game exe, because that
+    is where re-tools/ lives on a machine that never put the DLL next to the app.
+    """
+    from . import resources
+    p = resources.oodle()
+    if p:
+        return p
+    extra: list[Path] = []
+    if getattr(sys, "frozen", False):
+        extra.append(Path(sys.executable).resolve().parent / "oodle-data-shared.dll")
+    saved = _read_saved_exe()
+    if saved:
+        cur = Path(saved).resolve().parent
+        for _ in range(6):
+            extra.append(cur / "oodle-data-shared.dll")
+            extra.append(cur / "re-tools" / "oodle-data-shared.dll")
+            extra.append(cur / "tools" / "oodle-data-shared.dll")
+            extra.append(cur / "gammaEmerald-toolkit" / "tools" / "oodle-data-shared.dll")
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+    for cand in extra:
+        if cand.is_file():
+            return cand
     raise FileNotFoundError(
-        "oodle-data-shared.dll not found; expected at "
-        + " OR ".join(str(p) for p in OODLE_CANDIDATES)
+        "oodle-data-shared.dll not found. Put it next to the app (or in tools/), "
+        "or set GAMMA_OODLE_DLL. See tools/README.md."
     )
+
 
 
 VERSIONS: dict[str, VersionSpec] = {
@@ -148,6 +191,149 @@ def get(version: str) -> VersionSpec:
         ) from e
 
 
+def save_game_exe(exe: str | None) -> None:
+    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    _GAME_PATH_FILE.write_text(json.dumps({"exe": exe}, indent=2), encoding="utf-8")
+
+
+def load_game_exe() -> str | None:
+    for candidate in (
+        os.environ.get("GAMMA_GAME_EXE", "").strip() or None,
+        _read_saved_exe(),
+    ):
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def _read_saved_exe() -> str | None:
+    try:
+        data = json.loads(_GAME_PATH_FILE.read_text(encoding="utf-8"))
+        return data.get("exe") or None
+    except Exception:
+        return None
+
+
+def find_game_dir(exe) -> Path:
+    """Locate the project folder that contains Content/Paks.
+
+    Two layouts exist:
+
+    - shipping / Win64:  …/PokemonEmerald/Binaries/Win64/PokemonEmerald.exe
+      (Paks is three directories up)
+    - UE launcher:       …/EarlyAccessUpdate/PokemonEmerald.exe sitting *beside*
+      …/EarlyAccessUpdate/PokemonEmerald/Content/Paks
+      Walking up never sees that sibling folder, which is why the portable
+      build reported "could not read the pak" after Choose game picked the
+      launcher.
+    """
+    exe = Path(exe).resolve()
+    folders = []
+    here = exe.parent
+    for _ in range(10):
+        folders.append(here)
+        if here.parent == here:
+            break
+        here = here.parent
+    folders.append(exe.parent / exe.stem)
+    try:
+        folders.extend(sorted(p for p in exe.parent.iterdir() if p.is_dir()))
+    except OSError:
+        pass
+    seen: set[Path] = set()
+    for folder in folders:
+        folder = Path(folder)
+        if folder in seen:
+            continue
+        seen.add(folder)
+        if (folder / "Content" / "Paks").is_dir():
+            return folder
+    raise RuntimeError(
+        f"no Content/Paks folder near {exe}. "
+        "Pick PokemonEmerald.exe inside the game install "
+        "(the launcher next to the PokemonEmerald folder is fine)."
+    )
+
+
+_SKIP_EXE = ("crash", "eac", "prereq", "redist", "unins", "easyanticheat")
+
+
+def resolve_game_binary(chosen) -> Path:
+    """Win64 game exe, not the sibling UE launcher stub.
+
+    Launching EarlyAccessUpdate/PokemonEmerald.exe (the bootstrapper) from
+    Electron's job object starts the game exclusive-fullscreen with a cwd that
+    misses Saved/Config, so the hunt cannot see widgets or land clicks.
+    Binaries/Win64/PokemonEmerald.exe with cwd=Win64 is the process the
+    uncompiled app already attaches to.
+    """
+    chosen = Path(chosen)
+    if not chosen.is_file():
+        return chosen
+    try:
+        game_dir = find_game_dir(chosen)
+    except RuntimeError:
+        return chosen
+    win64 = game_dir / "Binaries" / "Win64"
+    if not win64.is_dir():
+        return chosen
+    exes = []
+    for p in win64.glob("*.exe"):
+        n = p.name.lower()
+        if any(s in n for s in _SKIP_EXE):
+            continue
+        exes.append(p)
+    if not exes:
+        return chosen
+    for p in exes:
+        if p.name.lower() == "pokemonemerald.exe":
+            return p
+    for p in exes:
+        if "shipping" in p.name.lower():
+            return p
+    return exes[0]
+
+
+def spawn_game(exe) -> object:
+    """Start the game outside Electron's job, windowed, from the Win64 folder."""
+    import subprocess
+    exe = resolve_game_binary(exe)
+    cmd = [str(exe), "-windowed"]
+    cwd = str(exe.parent)
+    if os.name != "nt":
+        return subprocess.Popen(cmd, cwd=cwd)
+    flags_try = (
+        0x00000008 | 0x00000200 | 0x01000000,  # DETACHED | NEW_GROUP | BREAKAWAY
+        0x00000200 | 0x01000000,
+        0x00000200,
+        0,
+    )
+    last = None
+    for flags in flags_try:
+        try:
+            return subprocess.Popen(cmd, cwd=cwd, creationflags=flags, close_fds=False)
+        except OSError as e:
+            last = e
+    raise last
+
+
+def resolve_launch_exe(explicit=None, stored=None, version: str = "ea") -> Path:
+    """First existing file among the chosen path, a remembered path, then builtins."""
+    for candidate in (explicit, stored, load_game_exe()):
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.is_file():
+            return path
+    spec = get(version)
+    if spec.exe and Path(spec.exe).is_file():
+        return Path(spec.exe)
+    raise RuntimeError(
+        "game exe not found. Use Choose game and pick "
+        "PokemonEmerald.exe (…/Binaries/Win64/PokemonEmerald.exe)."
+    )
+
+
 def from_exe(exe) -> VersionSpec:
     """Build a spec for an install the user pointed at, wherever it lives.
 
@@ -162,13 +348,10 @@ def from_exe(exe) -> VersionSpec:
     -- is inherited from whichever built-in spec matches.
     """
     exe = Path(exe)
-    if not exe.exists():
+    if not exe.is_file():
         raise RuntimeError(f"no such file: {exe}")
-    # .../<Project>/Binaries/Win64/<Project>.exe -> .../<Project>
-    game_dir = exe.parent.parent.parent
+    game_dir = find_game_dir(exe)
     paks = game_dir / "Content" / "Paks"
-    if not paks.is_dir():
-        raise RuntimeError(f"no Content/Paks folder under {game_dir}")
 
     utoc = next(iter(sorted(paks.glob("*.utoc"))), None)
     pak = next(iter(sorted(paks.glob("*.pak"))), None)
@@ -182,7 +365,7 @@ def from_exe(exe) -> VersionSpec:
     return replace(
         base,
         id="custom",
-        name=f"{game_dir.name} — {exe.parent.parent.parent.parent.name}",
+        name=f"{game_dir.name} — {game_dir.parent.name}",
         game_dir=game_dir,
         container=container,
         asset_format=fmt,
