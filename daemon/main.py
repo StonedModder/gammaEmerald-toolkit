@@ -47,6 +47,7 @@ from gamma.wild import WildHunter, BattleManager  # noqa: E402
 from gamma.encounter import EncounterHook, resolve_pokemon  # noqa: E402
 from gamma.party import PartyTool             # noqa: E402
 from gamma.money import MoneyScanner, read_money, write_money  # noqa: E402
+from gamma import items as itemsmod            # noqa: E402
 
 _out_lock = threading.Lock()
 
@@ -461,6 +462,25 @@ class Session:
             return r
 
         return self._cheat_job("party", work)
+
+    # ------------------------------------------------------------------ bag
+    def items_catalogue(self, _p):
+        """Every item this build defines -- what can legitimately be spawned."""
+        self._need_game()
+        return {"items": itemsmod.catalogue(self.game)}
+
+    def items_bag(self, _p):
+        self._need_game()
+        return itemsmod.bag(self.game)
+
+    def items_set(self, p):
+        """Add an item, change how many you hold, or drop it with quantity 0."""
+        self._need_game()
+        return itemsmod.set_quantity(self.game, str(p["name"]), int(p["quantity"]))
+
+    def items_remove(self, p):
+        self._need_game()
+        return itemsmod.remove(self.game, str(p["name"]))
 
     def money_get(self, _p):
         """The player's money, read straight off the inventory system."""
@@ -1132,6 +1152,10 @@ METHODS = {
     "encounter.clear": SESSION.encounter_clear,
     "party.list": SESSION.party_list,
     "party.set_shiny": SESSION.party_set_shiny,
+    "items.catalogue": SESSION.items_catalogue,
+    "items.bag": SESSION.items_bag,
+    "items.set": SESSION.items_set,
+    "items.remove": SESSION.items_remove,
     "money.get": SESSION.money_get,
     "money.set": SESSION.money_set,
     "money.status": SESSION.money_status,

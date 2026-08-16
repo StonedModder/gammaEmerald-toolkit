@@ -23,6 +23,9 @@ Fan-made. Reads and writes the memory of a locally running game, and reads that 
 | **Encounter odds** | Set wild shiny odds to any `1 in N` — type it, drag it, or pick a preset. Puts the original values back when you're done. |
 | **Force starter shiny** | Flips the starter's shiny flag on demand. This is a separate roll from wild odds. |
 | **Wild encounter** | Pick any Pokémon and the next wild encounter will be that species, shiny if you want. |
+| **Wild hunt** | Walks into the grass and paces until something appears, then keeps going until it matches what you asked for — shiny, species, nature, IVs, level. |
+| **Teleport** | Search every map in the game and travel to the ones with an exit nearby. |
+| **Bag** | See what you're carrying and give yourself any item the game has. |
 | **Money** | Read and set your money. |
 | **Party shiny** | Make a Pokémon in your party shiny. Writes a backup of the party first. |
 | **Save backups** | Snapshot your save as often as you like, name them, and restore any one later. |
@@ -84,11 +87,26 @@ Leave **talk to the bag first** ticked if you're standing in front of the bag. U
 
 **Encounter odds** sets the wild shiny rate — anything from `1/1` to `1/65536`, or type your own number. It doesn't affect the starter; use **Force this starter shiny** for that.
 
+**Wild hunt** does the same job out in the grass. It walks to the nearest grass, paces until something appears, reads it, and runs from anything you didn't ask for.
+
+Filters are all optional — leave them blank and it stops at any shiny:
+
+- **shiny only** — untick to stop at the first thing matching your other filters
+- **species** — click the Pokémon listed for the route you're on
+- **nature**, **level range**
+- **min IVs** per stat, or a minimum total
+
+It shows what's available where you're standing, and every encounter it reads scrolls past with its nature and IVs, so you can see it working.
+
 ## Cheats tab
 
 **Wild encounter** — search for a Pokémon, click it, and flip the switch. The next wild Pokémon you meet will be that species. Tick **always shiny** first if you want it shiny. Turn the switch off once you've caught it.
 
 You don't type anything: the dex number comes from the game itself. Pokémon that this build has no data for are greyed out, since they can't be forced.
+
+**Bag** — everything you're carrying, plus every item this build defines (46 on Early Access). Search for one, type a number and press **Add** to give yourself some, **Set** to change how many you hold, or 0 to throw them away. The × on a chip drops that item entirely.
+
+**Teleport** — search any map by name; the box takes plain text or a regex like `cave|forest` or `^MAP_Route1`. Maps with an exit in the area you're standing in are highlighted and listed first, and pressing **Go** walks you into it. Step outside before using it — from inside a building there's no exit to walk into.
 
 **Party shiny** — scan your party, then make a slot shiny. A copy of your party is written to `%LOCALAPPDATA%\GammaToolkit\party_backups` before anything changes.
 

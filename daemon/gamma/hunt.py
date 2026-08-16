@@ -596,10 +596,10 @@ class StarterHunter:
             t = time.time()
             self.stats.status = "press start"
             self.emit("attempt")
-            self.input.tap("enter", settle=1.2)
+            self.input.tap("enter", settle=1.2)     # leave the Press Start splash
             self.stats.status = "loading save"
             self.emit("attempt")
-            self.input.tap("enter", settle=1.2)     # Continue (top item)
+            self.click_frac(*self.CONTINUE_XY, settle=1.2)
 
             # Poll the cheap bounded scan. The deep scan is a LAST resort: it walks
             # every object and costs ~23s, so firing it early meant the pawn could
@@ -619,7 +619,9 @@ class StarterHunter:
                 now = time.time()
                 if now >= next_nudge:
                     next_nudge = now + 8
-                    self.input.tap("enter", settle=0.05)
+                    # re-click Continue rather than posting Enter: on the title
+                    # menu Enter lands on Close Game
+                    self.click_frac(*self.CONTINUE_XY, settle=0.05)
                 if now >= next_deep:
                     next_deep = now + 25
                     if self.find_pawn(deep=True):
@@ -768,6 +770,11 @@ class StarterHunter:
     # client-area capture at 1920x1080 and stored as fractions so they survive a
     # resolution change. Arrow keys do NOT move this cursor -- it is mouse driven.
     YES_XY_PROMPT = (1692 / 1920, 508 / 1080)   # starter prompt -> YES
+    # Title menu: Continue / New Game / Options / CLOSE GAME, and it is mouse
+    # driven like the rest. A posted Enter here does NOT pick Continue -- it
+    # closed the game outright, three times, which is what "the game keeps
+    # quitting mid-hunt" was. Click the row instead.
+    CONTINUE_XY = (200 / 1920, 106 / 1080)
     BALL_XY = {"treecko": (440 / 1920, 690 / 1080),
                "torchic": (960 / 1920, 690 / 1080),
                "mudkip":  (1480 / 1920, 690 / 1080)}

@@ -247,11 +247,17 @@ function onAttached(r) {
           'btnOddsApply', 'btnOddsRestore',
           'encOn', 'encShiny', 'encSearch', 'btnPartyScan',
           'moneyInput', 'btnMoneySet', 'btnMoneyRead',
-          'tpSearch', 'btnTpRefresh'], true);
+          'tpSearch', 'btnTpRefresh', 'bagSearch', 'btnBagRefresh',
+          'wShiny', 'wForce', 'wNature', 'wLvlMin', 'wLvlMax', 'wIvHP', 'wIvAtk',
+          'wIvDef', 'wIvSpA', 'wIvSpD', 'wIvSpe', 'wIvTotal', 'wMaxEnc',
+          'btnWildStart', 'btnWildGrass'], true);
   refreshOdds();
   loadMoney().catch((e) => log('money: ' + (e.message || e), 'bad'));
   loadEncounter().catch(() => {});
   loadTeleport().catch(() => {});
+  loadBag().catch(() => {});
+  loadWild().catch(() => {});
+  paintWildFilterHint();
   loadPokeRoster().catch(() => {});
   rpc('party.list', { rescan: false }).catch(() => {});
   $('btnOnce').disabled = !r.hwnd;
@@ -723,6 +729,35 @@ window.gamma.onEvent((msg) => {
       paintParty(data);
       if (data.name) log(`${data.name} → ${data.shiny ? 'shiny' : 'normal'} (${data.copies} copies)`);
     }
+    return;
+  }
+  if (event === 'wild') {
+    const k = data.kind;
+    if (k === 'result') {
+      const m = data.mon;
+      wildFeed(m
+        ? `${m.species} Lv${data.level ?? '?'} ${m.nature}`
+          + ` ${Object.entries(m.ivs).map(([s2, v]) => s2 + v).join(' ')}`
+          + (m.shiny ? '  SHINY' : '')
+          + (data.matched ? '  <- MATCH' : '')
+        : 'could not read that encounter',
+        { shiny: !!(m && m.shiny), match: !!data.matched });
+    } else if (k === 'found') {
+      wildFeed('stopping — found what you asked for', { match: true });
+      setWildRunning(false);
+      log('wild hunt: match found', 'shiny');
+    } else if (k === 'done') {
+      setWildRunning(false);
+      wildFeed('hunt finished');
+    } else if (k === 'error') {
+      setWildRunning(false);
+      showError(new Error(data.error));
+    } else if (k === 'walk') {
+      wildFeed('walking to grass…');
+    }
+    // 'pace' fires on every step, and wild.state costs a scan -- only refresh
+    // on the events that actually change what the panel shows
+    if (k !== 'pace') loadWild();
     return;
   }
   // The heap-scan money workflow is gone -- money is read straight off
@@ -1290,3 +1325,277 @@ async function travelTo(m) {
 
 $('tpSearch').oninput = () => paintTeleport();
 $('btnTpRefresh').onclick = () => loadTeleport().catch(showError);
+
+/* -------------------------------------------------------------- wild hunt */
+const NATURES = ['Hardy', 'Lonely', 'Brave', 'Adamant', 'Naughty', 'Bold', 'Docile',
+  'Relaxed', 'Impish', 'Lax', 'Timid', 'Hasty', 'Serious', 'Jolly', 'Naive',
+  'Modest', 'Mild', 'Quiet', 'Bashful', 'Rash', 'Calm', 'Gentle', 'Sassy',
+  'Careful', 'Quirky'];
+let wildSpecies = new Set();     // species chips the user has narrowed to
+let wildRunning = false;
+
+(function fillNatures() {
+  const sel = $('wNature');
+  NATURES.forEach((n) => {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n;
+    sel.appendChild(o);
+  });
+})();
+
+/** Everything the hunter should stop for. Blank fields mean "don't care". */
+function wildFilters() {
+  const num = (id) => {
+    const v = Number($(id).value);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+  const ivs = {};
+  [['HP', 'wIvHP'], ['Atk', 'wIvAtk'], ['Def', 'wIvDef'],
+   ['SpA', 'wIvSpA'], ['SpD', 'wIvSpD'], ['Spe', 'wIvSpe']].forEach(([k, id]) => {
+    const v = num(id);
+    if (v !== null) ivs[k] = v;
+  });
+
+  const f = {};
+  if ($('wShiny').checked) f.shiny_only = true;
+  if (wildSpecies.size) f.species = [...wildSpecies];
+  if ($('wNature').value) f.nature = [$('wNature').value];
+  if (Object.keys(ivs).length) f.min_ivs = ivs;
+  const total = num('wIvTotal');
+  if (total) f.min_iv_total = total;
+  const lo = num('wLvlMin'), hi = num('wLvlMax');
+  if (lo) f.min_level = lo;
+  if (hi) f.max_level = hi;
+  return f;
+}
+
+function describeFilters(f) {
+  const bits = [];
+  if (f.shiny_only) bits.push('shiny');
+  if (f.species) bits.push(f.species.join('/'));
+  if (f.nature) bits.push(f.nature.join('/'));
+  if (f.min_ivs) bits.push(Object.entries(f.min_ivs).map(([k, v]) => `${k}≥${v}`).join(' '));
+  if (f.min_iv_total) bits.push(`total≥${f.min_iv_total}`);
+  if (f.min_level || f.max_level) bits.push(`Lv ${f.min_level || 1}-${f.max_level || 100}`);
+  return bits.length ? `Stopping for: ${bits.join(' · ')}.` : 'Stopping for any encounter.';
+}
+
+function paintWildFilterHint() {
+  $('wildFilterHint').textContent = describeFilters(wildFilters());
+}
+
+function paintWildState(st) {
+  if (!st) return;
+  const where = $('wildWhere');
+  const rate = st.encounter_rate != null ? ` · ${st.encounter_rate}% encounter rate` : '';
+  const grass = st.grass_tiles
+    ? (st.on_grass ? ' · <span class="on">standing in grass</span>'
+                   : ` · ${st.grass_tiles} grass tiles nearby`)
+    : ' · no grass on this map';
+  where.innerHTML = st.route
+    ? `<b>${st.route}</b>${rate}${grass}${st.in_encounter ? ' · in a battle' : ''}`
+    : 'No route data here — walk onto a map with wild grass.';
+
+  const box = $('wildAvail');
+  const avail = st.available || [];
+  if (!avail.length) { box.textContent = ''; } else {
+    box.textContent = '';
+    avail.forEach((e) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sp-chip';
+      b.setAttribute('aria-pressed', String(wildSpecies.has(e.species)));
+      b.innerHTML = `${e.species}<span class="lv">Lv ${e.min}-${e.max}</span>`;
+      b.title = 'Only stop for this species';
+      b.onclick = () => {
+        wildSpecies.has(e.species) ? wildSpecies.delete(e.species)
+                                   : wildSpecies.add(e.species);
+        paintWildState(st);
+        paintWildFilterHint();
+      };
+      box.appendChild(b);
+    });
+  }
+
+  const h = st.hunt;
+  $('wildStats').hidden = !h;
+  if (h) {
+    const perHour = h.elapsed > 5 ? Math.round(h.encounters / (h.elapsed / 3600)) : 0;
+    $('wildStats').innerHTML =
+      `<div><b>${h.encounters}</b><span>encounters</span></div>` +
+      `<div data-hot="${h.shinies > 0}"><b>${h.shinies}</b><span>matches</span></div>` +
+      `<div><b>${fmtElapsed(h.elapsed)}</b><span>elapsed</span></div>` +
+      `<div><b>${perHour}</b><span>per hour</span></div>`;
+    $('wildHint').textContent = h.status || '';
+  }
+}
+
+async function loadWild() {
+  if (!attached) return;
+  try { paintWildState(await rpc('wild.state')); } catch { /* poll again later */ }
+}
+
+function wildFeed(line, opts) {
+  const box = $('wildFeed');
+  const d = document.createElement('div');
+  d.textContent = line;
+  if (opts) Object.entries(opts).forEach(([k, v]) => { d.dataset[k] = String(v); });
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+  while (box.children.length > 60) box.removeChild(box.firstChild);
+}
+
+function setWildRunning(on) {
+  wildRunning = on;
+  $('btnWildStart').disabled = on || !attached;
+  $('btnWildStop').disabled = !on;
+  $('btnWildGrass').disabled = on || !attached;
+  $('btnWildStart').dataset.running = String(on);
+}
+
+$('btnWildStart').onclick = async () => {
+  showError(null);
+  const f = wildFilters();
+  try {
+    await rpc('wild.start', {
+      filters: f,
+      force_shiny: $('wForce').checked,
+      max_encounters: Number($('wMaxEnc').value) || 0,
+    });
+    setWildRunning(true);
+    wildFeed(describeFilters(f));
+    log('wild hunt started');
+  } catch (e) { showError(e); }
+};
+
+$('btnWildStop').onclick = async () => {
+  try { await rpc('wild.stop'); } catch (e) { showError(e); }
+  setWildRunning(false);
+  log('wild hunt stopped');
+};
+
+$('btnWildGrass').onclick = async () => {
+  showError(null);
+  $('wildHint').textContent = 'Walking to the nearest grass…';
+  try {
+    const r = await rpc('wild.goto_grass');
+    $('wildHint').textContent = r.on_grass ? 'Standing in grass.'
+                                           : 'Could not reach grass from here.';
+  } catch (e) { showError(e); }
+  loadWild();
+};
+
+['wShiny', 'wNature', 'wLvlMin', 'wLvlMax', 'wIvHP', 'wIvAtk', 'wIvDef',
+ 'wIvSpA', 'wIvSpD', 'wIvSpe', 'wIvTotal'].forEach((id) => {
+  $(id).addEventListener('change', paintWildFilterHint);
+  $(id).addEventListener('input', paintWildFilterHint);
+});
+
+/* -------------------------------------------------------------------- bag */
+/* Every item comes from the game's own item database, so the list is exactly
+   what this build can hold -- see gamma/items.py for the structures. */
+const POCKETS = ['Items', 'Poke Balls', 'TMs & HMs', 'Berries', 'Key items', 'Mail'];
+let BAG_CATALOGUE = [];
+let bagHave = new Map();          // lowercased name -> quantity
+
+function pocketName(n) { return POCKETS[n] || `Pocket ${n}`; }
+
+function paintBagHave() {
+  const box = $('bagNow');
+  if (!bagHave.size) {
+    box.innerHTML = '<div class="empty tight">Your bag is empty.</div>';
+    return;
+  }
+  box.textContent = '';
+  [...bagHave.entries()].forEach(([, entry]) => {
+    const el = document.createElement('span');
+    el.className = 'bag-have';
+    el.innerHTML = `${entry.name} <b>x${entry.quantity}</b>`;
+    const x = document.createElement('button');
+    x.textContent = '\u00d7';
+    x.title = `Throw away every ${entry.name}`;
+    x.onclick = () => bagRemove(entry.name);
+    el.appendChild(x);
+    box.appendChild(el);
+  });
+}
+
+function paintBagList() {
+  const q = ($('bagSearch').value || '').trim().toLowerCase();
+  const rows = q ? BAG_CATALOGUE.filter((i) => i.name.toLowerCase().includes(q))
+                 : BAG_CATALOGUE;
+  const box = $('bagList');
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty tight">No item matches that.</div>';
+    return;
+  }
+  box.textContent = '';
+  rows.slice(0, 200).forEach((item) => {
+    const have = bagHave.get(item.name.toLowerCase());
+    const row = document.createElement('div');
+    row.className = 'bag-row';
+    row.dataset.have = String(!!have);
+
+    const left = document.createElement('div');
+    left.innerHTML = `<div class="nm">${item.name}</div>`
+      + `<div class="sub">${pocketName(item.category)}`
+      + `${item.buy ? ` · buy ${item.buy}` : ''}${have ? ` · holding ${have.quantity}` : ''}</div>`;
+
+    const qty = document.createElement('input');
+    qty.className = 'act tiny';
+    qty.type = 'number'; qty.min = '0'; qty.max = '999';
+    qty.value = have ? have.quantity : '';
+    qty.placeholder = have ? '' : '1';
+    qty.setAttribute('aria-label', `How many ${item.name}`);
+
+    const go = document.createElement('button');
+    go.className = 'act';
+    go.textContent = have ? 'Set' : 'Add';
+    go.onclick = () => bagSet(item.name, Number(qty.value) || (have ? 0 : 1));
+
+    row.append(left, qty, go);
+    box.appendChild(row);
+  });
+}
+
+async function loadBag() {
+  if (!attached) return;
+  enable(['bagSearch', 'btnBagRefresh'], true);
+  try {
+    if (!BAG_CATALOGUE.length) {
+      BAG_CATALOGUE = (await rpc('items.catalogue')).items || [];
+    }
+    const b = await rpc('items.bag');
+    bagHave = new Map();
+    (b.categories || []).forEach((c) => (c.items || []).forEach((i) => {
+      bagHave.set((i.name || '').toLowerCase(), i);
+    }));
+    paintBagHave();
+    paintBagList();
+    $('bagHint').textContent =
+      `${BAG_CATALOGUE.length} items in this build · carrying ${b.total}.`;
+  } catch (e) { showError(e); }
+}
+
+async function bagSet(name, quantity) {
+  showError(null);
+  try {
+    const r = await rpc('items.set', { name, quantity });
+    log(quantity ? `bag: ${name} x${quantity}` : `bag: dropped ${name}`);
+    $('bagHint').textContent = r.added ? `Added ${name}.`
+      : quantity ? `${name} set to ${quantity}.` : `Threw away ${name}.`;
+    await loadBag();
+  } catch (e) { showError(e); }
+}
+
+async function bagRemove(name) {
+  showError(null);
+  try {
+    await rpc('items.remove', { name });
+    log(`bag: dropped ${name}`);
+    await loadBag();
+  } catch (e) { showError(e); }
+}
+
+$('bagSearch').oninput = () => paintBagList();
+$('btnBagRefresh').onclick = () => loadBag().catch(showError);

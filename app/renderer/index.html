@@ -106,6 +106,61 @@
         </div>
       </div>
 
+      <div class="card" id="wildCard">
+        <div class="cheat-head">
+          <div>
+            <h2>Wild hunt</h2>
+            <p class="hint">
+              Walks into the nearest grass, paces until something appears, reads
+              it, and runs if it isn't what you asked for.
+            </p>
+          </div>
+          <button class="act" id="btnWildStop" disabled>Stop</button>
+        </div>
+
+        <div class="wild-where" id="wildWhere">Attach to see where you are.</div>
+        <div class="wild-avail" id="wildAvail"></div>
+
+        <div class="wild-filters">
+          <div class="frow">
+            <label class="chk"><input type="checkbox" id="wShiny" checked disabled> shiny only</label>
+            <label class="chk"><input type="checkbox" id="wForce" disabled> force every encounter shiny</label>
+          </div>
+          <div class="frow">
+            <span class="flabel">Nature</span>
+            <select class="act" id="wNature" disabled><option value="">any</option></select>
+            <span class="flabel">Level</span>
+            <input class="act tiny" id="wLvlMin" type="number" min="1" max="100" placeholder="min" disabled>
+            <span class="dash">&ndash;</span>
+            <input class="act tiny" id="wLvlMax" type="number" min="1" max="100" placeholder="max" disabled>
+          </div>
+          <div class="frow ivs">
+            <span class="flabel">Min IVs</span>
+            <label>HP<input class="act tiny" id="wIvHP" type="number" min="0" max="31" placeholder="0" disabled></label>
+            <label>Atk<input class="act tiny" id="wIvAtk" type="number" min="0" max="31" placeholder="0" disabled></label>
+            <label>Def<input class="act tiny" id="wIvDef" type="number" min="0" max="31" placeholder="0" disabled></label>
+            <label>SpA<input class="act tiny" id="wIvSpA" type="number" min="0" max="31" placeholder="0" disabled></label>
+            <label>SpD<input class="act tiny" id="wIvSpD" type="number" min="0" max="31" placeholder="0" disabled></label>
+            <label>Spe<input class="act tiny" id="wIvSpe" type="number" min="0" max="31" placeholder="0" disabled></label>
+            <span class="flabel">Total</span>
+            <input class="act tiny" id="wIvTotal" type="number" min="0" max="186" placeholder="0" disabled>
+          </div>
+          <p class="hint" id="wildFilterHint">Leave everything blank to stop at any shiny.</p>
+        </div>
+
+        <div class="row">
+          <input class="act tiny" id="wMaxEnc" type="number" min="0" step="1"
+                 placeholder="stop after" aria-label="Stop after N encounters" disabled>
+          <span class="spacer"></span>
+          <button class="act" id="btnWildGrass" disabled>Go to grass</button>
+          <button class="act" data-tone="shiny" id="btnWildStart" disabled>Start wild hunt</button>
+        </div>
+
+        <div class="wild-stats" id="wildStats" hidden></div>
+        <div class="wild-feed" id="wildFeed"></div>
+        <p class="hint" id="wildHint"></p>
+      </div>
+
       <div class="stats">
         <div class="stat"><b id="sAttempts">0</b><span>resets</span></div>
         <div class="stat"><b id="sElapsed">0:00</b><span>elapsed</span></div>
@@ -193,6 +248,28 @@
           <div class="empty tight">Choose a game on the Hunt tab to load sprites.</div>
         </div>
         <p class="hint" id="encHint">Attach to enable the hook.</p>
+      </div>
+
+      <div class="card cheat" id="bagCard">
+        <div class="cheat-head">
+          <div>
+            <h2>Bag</h2>
+            <p class="hint">
+              What you're carrying, and every item this build has. Set a number
+              to give yourself some; set it to 0 to throw them away.
+            </p>
+          </div>
+          <button class="act" id="btnBagRefresh" disabled>Refresh</button>
+        </div>
+
+        <div class="bag-now" id="bagNow">
+          <div class="empty tight">Attach to read your bag.</div>
+        </div>
+
+        <input class="act enc-search" id="bagSearch" type="search" disabled
+               placeholder="Search items… (potion, ball, rare)" aria-label="Search items">
+        <div class="bag-list" id="bagList"></div>
+        <p class="hint" id="bagHint"></p>
       </div>
 
       <div class="card cheat" id="tpCard">
