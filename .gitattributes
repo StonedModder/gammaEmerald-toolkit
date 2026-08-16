@@ -1,0 +1,14 @@
+# Batch files MUST check out with CRLF. cmd treats a lone LF as part of the
+# command name and the launcher dies with "'launchApp.bat' is not recognized" --
+# this repo has already been bitten by exactly that.
+*.bat text eol=crlf
+
+# Everything else: normalise in the repo, native on checkout.
+* text=auto
+
+# Binary assets git should not touch.
+*.gif binary
+*.png binary
+*.mp3 binary
+*.dll binary
+*.exe binary

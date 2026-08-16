@@ -1,0 +1,58 @@
+# --- extracted game content -------------------------------------------------
+# Never commit ripped assets. They belong in the on-disk cache outside the repo
+# (%LOCALAPPDATA%/GammaToolkit/cache/), not in git history where they are
+# permanent, bloat every clone, and are the part most likely to draw a takedown.
+sprites/
+audio/
+extracted/
+extracted-ea/
+*.png
+*.mp3
+*.wav
+*.ogg
+*.uasset
+*.uexp
+*.ubulk
+*.pak
+*.utoc
+*.ucas
+index.json
+audio.json
+catalog.json
+
+# the starter sprites ARE part of the app UI, not an extraction dump
+!app/renderer/assets/
+!app/renderer/assets/*.gif
+
+# --- third-party binaries ---------------------------------------------------
+# Oodle (Epic/RAD) and binkadec (RAD) are proprietary and not redistributed
+# here. tools/README.md says where to get them and where to put them.
+tools/*.dll
+tools/binkadec/
+
+# --- secrets / keys ---------------------------------------------------------
+# The EA pak AES key is deliberately compiled into daemon/gamma/versions.py so
+# the app decrypts with zero setup. Loose key files are still ignored so a
+# machine-specific override never lands in a commit by accident.
+*_aes.key
+ea-AES.txt
+
+# --- build artifacts --------------------------------------------------------
+node_modules/
+dist/
+build/
+release/
+*.spec
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- editor / os ------------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.bak
+*.scaffold.bak
+*.log

@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: file:; media-src 'self' data: file:;">
+<title>Gamma Toolkit</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header>
+  <div class="wordmark"><b>GAMMA</b> TOOLKIT</div>
+  <nav role="tablist">
+    <button role="tab" data-pane="hunt" aria-selected="true">Hunt</button>
+    <button role="tab" data-pane="cheats" aria-selected="false">Cheats</button>
+    <button role="tab" data-pane="assets" aria-selected="false">Assets</button>
+  </nav>
+  <div class="link">
+    <span class="pip" id="pip" data-on="false"></span>
+    <span id="linkText">not attached</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- =========================================================== HUNT === -->
+  <section class="pane" id="pane-hunt">
+
+    <div class="col main">
+
+      <!-- signature: a log-scaled odds gauge, so a patch is visible as movement -->
+      <div class="gauge" id="oddsCard" data-forced="false" data-found="false">
+        <div class="gauge-top">
+          <span class="eyebrow">Shiny odds</span>
+          <span class="src" id="oddsSub">not attached</span>
+        </div>
+        <div class="gauge-mid">
+          <div class="fraction" id="oddsText">&mdash;</div>
+          <div class="gauge-state"><b id="gaugeState">idle</b><span id="gaugeSub">attach to begin</span></div>
+        </div>
+        <div class="rail" aria-hidden="true">
+          <div class="track"></div>
+          <div class="marker" id="oddsMarker"></div>
+        </div>
+        <div class="scale" aria-hidden="true"><span>1/1</span><span>1/100</span><span>1/10k</span><span>1/1M</span></div>
+      </div>
+
+      <div class="card odds">
+        <h2>Encounter odds</h2>
+
+        <div class="odds-set">
+          <div class="odds-now">
+            <span class="lead">1 in</span>
+            <input id="oddsDenom" type="number" min="1" max="10000000" step="1"
+                   value="4096" aria-label="Shiny odds, one in this many" disabled>
+            <button class="act primary" id="btnOddsApply" disabled>Apply</button>
+            <button class="act" id="btnOddsRestore" disabled>Restore</button>
+          </div>
+
+          <input class="odds-slider" id="oddsSlider" type="range"
+                 min="0" max="1000" value="500" disabled
+                 aria-label="Shiny odds slider">
+
+          <div class="presets" id="oddsPresets" role="group" aria-label="Preset odds">
+            <button class="chip" data-denom="1">1/1</button>
+            <button class="chip" data-denom="100">1/100</button>
+            <button class="chip" data-denom="512">1/512</button>
+            <button class="chip" data-denom="1024">1/1024</button>
+            <button class="chip" data-denom="4096">1/4096</button>
+            <button class="chip" data-denom="8192">1/8192</button>
+            <button class="chip" data-denom="65536">1/65536</button>
+          </div>
+          <p class="hint" id="oddsHint">
+            Sets the <b>wild encounter</b> roll: the Blueprint odds constants and
+            <code>ShinyRate</code> together. Type any number, drag, or pick a preset.
+          </p>
+        </div>
+
+        <div class="odds-starter">
+          <div class="row">
+            <button class="act" data-tone="shiny" id="btnForce" disabled>Force this starter shiny</button>
+            <button class="act" id="btnReadRoll" disabled>Read roll</button>
+            <label class="chk"><input type="checkbox" id="forceEachRun"> force every attempt</label>
+          </div>
+          <p class="hint">
+            The <b>starter</b> roll is separate and has no probability &mdash; it is a
+            flag the game sets when the screen opens, so it is forced on or left alone.
+          </p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Run</h2>
+        <div class="roster" id="roster"></div>
+        <div class="row">
+          <select class="act hide" id="starterSel" aria-label="Starter to pick"></select>
+          <label class="chk"><input type="checkbox" id="openBag" checked> talk to the bag first</label>
+          <input class="act" id="maxAttempts" type="number" min="0" step="1"
+                 placeholder="stop after" aria-label="Stop after N attempts">
+          <span class="spacer"></span>
+          <button class="act" id="btnOnce" disabled>One attempt</button>
+          <button class="act" data-tone="shiny" id="btnHunt" disabled>Start hunt</button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><b id="sAttempts">0</b><span>resets</span></div>
+        <div class="stat"><b id="sElapsed">0:00</b><span>elapsed</span></div>
+        <div class="stat"><b id="sRate">0</b><span>resets / hour</span></div>
+        <div class="stat"><b id="sCycle">&mdash;</b><span>sec / reset</span></div>
+        <div class="stat" id="statFound"><b id="sFound">&mdash;</b><span>shinies</span></div>
+      </div>
+
+      <p class="hint timing" id="resetHint"></p>
+
+    </div>
+
+    <div class="col side">
+      <div class="card">
+        <h2>Game</h2>
+        <div class="row">
+          <button class="act" id="btnPickExe">Choose game&hellip;</button>
+          <button class="act primary" id="btnLaunch">Launch &amp; attach</button>
+        </div>
+        <div class="row"><span class="hint gamepath" id="gamePath">No game chosen yet.</span></div>
+
+        <div class="row">
+          <select class="act wide" id="buildSel" aria-label="Game build"></select>
+        </div>
+        <div class="row">
+          <select class="act wide" id="pidSel" aria-label="Running process"></select>
+        </div>
+        <div class="row">
+          <button class="act" id="btnRefresh">Refresh</button>
+          <button class="act" id="btnAttach">Attach</button>
+          <button class="act" id="btnFindPlayer" disabled>Find player</button>
+        </div>
+        <div class="row"><span class="hint" id="attachHint">Choose the game, or start it yourself and attach.</span></div>
+        <div class="row"><span class="err" id="err"></span></div>
+        <div class="checks" id="checks" hidden></div>
+      </div>
+
+      <!-- Attempts lives here, not under the roster: in the main column it got
+           whatever height was left over, which was two rows. -->
+      <div class="card attempts">
+        <h2>Attempts</h2>
+        <div class="attempts-list" id="attempts">
+          <div class="empty tight">No attempts yet.</div>
+        </div>
+      </div>
+
+      <div class="card logcard">
+        <h2>Run log</h2>
+        <div class="log" id="log"><div class="t">Waiting for the daemon.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================= CHEATS === -->
+  <section class="pane scroll" id="pane-cheats" hidden>
+    <div class="wrap">
+      <div class="card">
+        <h2>Blueprint shiny constants</h2>
+        <p class="hint">
+          The <code>EX_FloatConst</code> odds baked into Blueprint bytecode, used by
+          wild encounters and battles. The <b>Encounter odds</b> control on the Hunt
+          tab drives these; this tab is the raw view of every site.
+          These are <b>not</b> the starter roll &mdash; that is a flag on
+          <code>BP_GE_PickStarterPlayer_C</code>, and <code>ShinyRate</code> was
+          tested and does <b>not</b> affect it.
+        </p>
+        <div class="row">
+          <button class="act" id="btnScan" disabled>Scan</button>
+          <button class="act primary" id="btnAll" disabled>Set all to 1/1</button>
+          <button class="act" id="btnVerify" disabled>Test write</button>
+          <button class="act" data-tone="danger" id="btnRestore" disabled>Restore</button>
+          <span class="spacer"></span>
+          <span class="hint" id="scanHint">Not scanned.</span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Sites</h2>
+        <div id="sitesWrap">
+          <div class="empty"><b>Nothing scanned yet</b>Scan to list every patch site the game exposes.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================= ASSETS === -->
+  <section class="pane" id="pane-assets" hidden>
+
+    <!-- what kind of thing you are looking for -->
+    <div class="libr" id="catRail">
+      <div class="libr-head">Library</div>
+      <div class="libr-list" id="cats"><div class="empty">Reading the pak&hellip;</div></div>
+      <div class="libr-foot" id="libFoot"></div>
+    </div>
+
+    <!-- which one -->
+    <div class="browse">
+      <div class="find">
+        <input id="assetSearch" type="search" placeholder="Search everything&hellip;"
+               aria-label="Search every library" disabled>
+      </div>
+      <div class="subjects" id="subjects">
+        <div class="empty tight">Pick a library.</div>
+      </div>
+      <div class="browse-foot" id="subjFoot"></div>
+    </div>
+
+    <!-- and what it looks and sounds like -->
+    <div class="stage">
+      <div class="stage-top">
+        <div class="titling">
+          <span class="eyebrow" id="stageKind">Preview</span>
+          <b id="stageName">Nothing selected</b>
+          <span class="src" id="stageMeta"></span>
+        </div>
+        <div class="row nowrap">
+          <button class="act" id="btnPlay" disabled hidden>Play cry</button>
+          <button class="act" id="btnExtractOne" disabled>Extract</button>
+          <button class="act primary" id="btnExtractAll" disabled>Extract all</button>
+        </div>
+      </div>
+
+      <div class="light-table" id="lightTable">
+        <div class="empty" id="stageEmpty">
+          <b>Nothing extracted yet</b>
+          Everything here is read out of the pak the moment you click it. Animations
+          render as GIFs, sounds as MP3.
+        </div>
+        <img id="stageImg" alt="" hidden>
+        <audio id="stageAudio" hidden></audio>
+        <div class="zoomer" id="zoomer" hidden>
+          <button class="chip" data-zoom="1">1&times;</button>
+          <button class="chip" data-zoom="2">2&times;</button>
+          <button class="chip is-on" data-zoom="4">4&times;</button>
+          <button class="chip" data-zoom="8">8&times;</button>
+        </div>
+      </div>
+
+      <div class="entries" id="entries"></div>
+      <div class="stage-foot"><span class="hint" id="assetHint">Select a build on the Hunt tab to read a different version.</span></div>
+    </div>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+<script src="assets.js"></script>
+</body>
+</html>
