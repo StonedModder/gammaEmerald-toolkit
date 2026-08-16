@@ -1,8 +1,24 @@
 # tools/
 
-Two third-party binaries make the asset features work. **Neither is included
-here** — both are proprietary and not mine to redistribute. Everything else in
-the toolkit works without them.
+Three third-party binaries live here. **None are committed to this repo.** The
+portable release bundles ffmpeg; the other two are proprietary and not mine to
+redistribute. Everything else in the toolkit works without them.
+
+## `ffmpeg.exe` — needed for GIF and MP3 export
+
+Renders animations to GIF, cries and music to MP3, and decodes DXT/BC textures.
+Sprites and browsing work without it; the app says so when it is missing.
+
+The portable release ships with it, so users need nothing. For a source
+checkout, either install it (`winget install Gyan.FFmpeg`) or drop a build here
+as `tools/ffmpeg.exe`. `GAMMA_FFMPEG` overrides the path.
+
+Builds of the release bundle come from
+[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — use the **LGPL**
+variant (`ffmpeg-master-latest-win64-lgpl.zip`), not the GPL one, and keep its
+`LICENSE.txt` next to it as `tools/ffmpeg-LICENSE.txt`. Both files are picked up
+by the packaging step; without them the build still succeeds but the release
+will not have ffmpeg in it.
 
 ## `oodle-data-shared.dll` — needed to read the Early Access pak
 

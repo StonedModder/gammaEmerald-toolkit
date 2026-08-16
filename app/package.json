@@ -28,6 +28,14 @@
       {
         "from": "../dist-daemon/gamma-daemon.exe",
         "to": "daemon/gamma-daemon.exe"
+      },
+      {
+        "from": "../tools/ffmpeg.exe",
+        "to": "tools/ffmpeg.exe"
+      },
+      {
+        "from": "../tools/ffmpeg-LICENSE.txt",
+        "to": "tools/ffmpeg-LICENSE.txt"
       }
     ],
     "asar": true,

@@ -45,9 +45,7 @@ Pick your game executable in the app. The Early Access pak key is built in, so t
 
 ### Portable release (recommended)
 
-Download **`GammaToolkit-v0.0.2-portable.exe`** from [Releases](https://github.com/StonedModder/gammaEmerald-toolkit/releases) and run it. Nothing to install — no Python, no Node.
-
-For GIF and MP3 export you also need [ffmpeg](https://ffmpeg.org/) (`winget install Gyan.FFmpeg`). Everything else works without it, and the app tells you if it's missing.
+Download **`GammaToolkit-v0.0.2-portable.exe`** from [Releases](https://github.com/StonedModder/gammaEmerald-toolkit/releases) and run it. Nothing to install — no Python, no Node, and ffmpeg is included, so GIF and MP3 export work out of the box.
 
 ### From source
 
@@ -55,7 +53,7 @@ Windows only — it uses Win32 memory and input.
 
 - Python 3.11+ on `PATH`
 - Node 18+
-- ffmpeg for GIF/MP3 export
+- [ffmpeg](https://ffmpeg.org/) on `PATH` for GIF/MP3 export (`winget install Gyan.FFmpeg`) — the portable release bundles this, a source checkout does not
 - Optional: Oodle DLL and `binkadec` for compressed assets and audio — see [`tools/README.md`](tools/README.md). Not redistributed here.
 
 ```bat
@@ -133,10 +131,16 @@ Backups live in `%LOCALAPPDATA%\GammaToolkit\save_backups`.
 app/          Electron shell (UI only)
 daemon/       JSON-RPC daemon
   gamma/      memory, hunter, odds, saves, pak / IoStore, asset decode
-tools/        drop oodle-data-shared.dll / binkadec here (optional)
+tools/        ffmpeg + optional oodle-data-shared.dll / binkadec
 ```
 
 The UI talks to `daemon/main.py` over JSON-RPC on stdio — there's no HTTP server and nothing listening on a port. Override the interpreter with `GAMMA_PYTHON` if you need to.
+
+## Credits
+
+**[Ionic28](https://github.com/Ionic28)** worked out the Pokémon spawning and encounter cheats, the money cheat, the memory-tools template the daemon is built on, and how to fetch and list the party. Those parts of the toolkit come from that work.
+
+The shiny rate control, forced shiny, map teleporting and the save backup features are separate work and not theirs.
 
 ## Disclaimer
 
@@ -144,4 +148,6 @@ Pokémon Gamma Emerald, Pokémon, and related assets belong to their respective 
 
 ## License
 
-[MIT](LICENSE) for this toolkit's source. Third-party binaries described under `tools/` stay under their own licenses and are not included.
+[MIT](LICENSE) for this toolkit's source.
+
+The portable release bundles **ffmpeg** (LGPL v2.1+, unmodified, from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)); its licence ships beside it as `tools/ffmpeg-LICENSE.txt` and the source is available from [ffmpeg.org](https://ffmpeg.org/download.html). The other third-party binaries described under `tools/` stay under their own licences and are not included.

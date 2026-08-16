@@ -29,6 +29,10 @@ catalog.json
 # here. tools/README.md says where to get them and where to put them.
 tools/*.dll
 tools/binkadec/
+# ffmpeg is bundled into the portable release, not committed -- it is 115 MB
+# and freely downloadable. tools/README.md says which build and where from.
+tools/ffmpeg.exe
+tools/ffmpeg-LICENSE.txt
 
 # --- secrets / keys ---------------------------------------------------------
 # The EA pak AES key is deliberately compiled into daemon/gamma/versions.py so
