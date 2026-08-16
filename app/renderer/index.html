@@ -195,6 +195,28 @@
         <p class="hint" id="encHint">Attach to enable the hook.</p>
       </div>
 
+      <div class="card cheat" id="tpCard">
+        <div class="cheat-head">
+          <div>
+            <h2>Teleport</h2>
+            <p class="hint">
+              Search any map by name. Highlighted ones have an exit in the area
+              you're standing in — the toolkit walks you into it, so step outside
+              first if you're in a building.
+            </p>
+          </div>
+          <button class="act" id="btnTpRefresh" disabled>Refresh</button>
+        </div>
+        <input class="act enc-search" id="tpSearch" type="search" disabled
+               placeholder="Search maps… (route 1, ^MAP_Petal, cave|forest)"
+               aria-label="Search maps">
+        <div class="tp-here" id="tpHere" hidden></div>
+        <div class="tp-list" id="tpList">
+          <div class="empty tight">Attach to load the map list.</div>
+        </div>
+        <p class="hint" id="tpHint"></p>
+      </div>
+
       <div class="card cheat" id="partyCard">
         <div class="cheat-head">
           <div>

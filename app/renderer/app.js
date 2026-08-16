@@ -246,10 +246,12 @@ function onAttached(r) {
           'btnRestore', 'btnFindPlayer', 'oddsDenom', 'oddsSlider',
           'btnOddsApply', 'btnOddsRestore',
           'encOn', 'encShiny', 'encSearch', 'btnPartyScan',
-          'moneyInput', 'btnMoneySet', 'btnMoneyRead'], true);
+          'moneyInput', 'btnMoneySet', 'btnMoneyRead',
+          'tpSearch', 'btnTpRefresh'], true);
   refreshOdds();
   loadMoney().catch((e) => log('money: ' + (e.message || e), 'bad'));
   loadEncounter().catch(() => {});
+  loadTeleport().catch(() => {});
   loadPokeRoster().catch(() => {});
   rpc('party.list', { rescan: false }).catch(() => {});
   $('btnOnce').disabled = !r.hwnd;
@@ -495,7 +497,10 @@ function selectEnc(name) {
   const badge = $('encDex');
   badge.hidden = !dex;
   badge.textContent = dex ? '#' + dex : '';
-  $('encOn').disabled = !dex;
+  // The switch stays live. Disabling it until something is picked made the
+  // cheat look broken: clicking a disabled toggle does nothing and says
+  // nothing, so there was no way to find out what was missing.
+  $('encOn').disabled = !attached;
   // "no species data" is only true once the list has actually loaded. Saying it
   // while detached blamed the game for the app not being attached yet.
   const loaded = Object.keys(DEX_BY_NAME).length > 0;
@@ -536,7 +541,7 @@ async function loadEncounter() {
     fillFront($('encPreview'), r.label, !!r.shiny, true);
   }
   $('encShiny').checked = !!r.shiny;
-  $('encOn').disabled = !encSel.dex;
+  $('encOn').disabled = !attached;
   $('encHint').textContent = r.enabled
     ? `Hooked: ${r.label || r.dex}${r.shiny ? ' · shiny' : ''}. Turn off after the catch.`
     : (encSel.dex ? `${encSel.name} is ready. Flip the switch to force the next encounter.`
@@ -557,9 +562,18 @@ $('encOn').onchange = async () => {
     }
     return;
   }
+  if (!encSel.name) {
+    $('encOn').checked = false;
+    $('encHint').textContent = 'Pick a Pokémon from the list below first.';
+    $('encSearch').focus();
+    return;
+  }
   if (!encSel.dex) {
     $('encOn').checked = false;
-    return showError(new Error('pick a Pokémon first'));
+    $('encHint').textContent = Object.keys(DEX_BY_NAME).length
+      ? `${encSel.name} has no species data in this build, so it cannot be forced.`
+      : 'Still reading the species list — try again in a moment.';
+    return;
   }
   $('encHint').textContent = `Hooking ${encSel.name}…`;
   try {
@@ -1163,3 +1177,116 @@ $('btnMoneySet').onclick = async () => {
     $('moneyInput').value = '';
   } catch (e) { showError(e); }
 };
+
+/* --------------------------------------------------------------- teleport */
+/* Travel works by walking into one of THIS level's teleport volumes, so only
+   its exits actually go anywhere. The whole map list is still shown, because
+   that is how you find a place by name -- the ones you can reach now are
+   sorted to the top and the rest say why they are not clickable. */
+let TP_MAPS = [];
+
+function tpFilter(query) {
+  const q = (query || '').trim();
+  if (!q) return TP_MAPS;
+  // Try it as a regex first so "cave|forest" and "^MAP_Route1" work; fall back
+  // to a plain substring when it isn't valid regex (a lone "(" shouldn't wipe
+  // the list while you're still typing).
+  let rx = null;
+  try { rx = new RegExp(q, 'i'); } catch { rx = null; }
+  const plain = q.toLowerCase();
+  return TP_MAPS.filter((m) => rx ? rx.test(m.map) : m.map.toLowerCase().includes(plain));
+}
+
+function paintTeleport() {
+  const box = $('tpList');
+  const rows = tpFilter($('tpSearch').value);
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty tight">No map matches that.</div>';
+    return;
+  }
+  // reachable first, then current, then the rest alphabetically
+  const order = [...rows].sort((a, b) =>
+    (b.reachable - a.reachable) || (b.current - a.current) || a.map.localeCompare(b.map));
+
+  box.textContent = '';
+  order.slice(0, 300).forEach((m) => {
+    const row = document.createElement('div');
+    row.className = 'tp-row';
+    row.dataset.reachable = String(!!m.reachable);
+    row.dataset.current = String(!!m.current);
+
+    const left = document.createElement('div');
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    nm.textContent = m.map;
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    sub.textContent = m.current ? 'you are here'
+      : m.reachable ? `exit in this area${m.distance != null ? ` · ${m.distance} away` : ''}`
+      : 'no exit to here from this map';
+    left.append(nm, sub);
+
+    const go = document.createElement('button');
+    go.className = 'act';
+    go.textContent = m.current ? 'Here' : 'Go';
+    go.disabled = !m.reachable || !!m.current;
+    go.onclick = () => travelTo(m);
+
+    row.append(left, go);
+    box.appendChild(row);
+  });
+
+  const reach = rows.filter((m) => m.reachable).length;
+  $('tpHint').textContent =
+    `${rows.length} map${rows.length === 1 ? '' : 's'} shown · ${reach} reachable from here.`;
+}
+
+async function loadTeleport() {
+  if (!attached) {
+    $('tpList').innerHTML = '<div class="empty tight">Attach to load the map list.</div>';
+    enable(['tpSearch', 'btnTpRefresh'], false);
+    return;
+  }
+  enable(['tpSearch', 'btnTpRefresh'], true);
+  try {
+    const r = await rpc('travel.maps');
+    TP_MAPS = r.maps || [];
+    const here = (r.here || []).filter((w) => !/Persistant/i.test(w));
+    $('tpHere').hidden = !here.length;
+    $('tpHere').innerHTML = here.length
+      ? `You are in <b>${here.join('</b>, <b>')}</b>` : '';
+    paintTeleport();
+  } catch (e) {
+    $('tpList').innerHTML = '<div class="empty tight">Could not read the map list.</div>';
+    showError(e);
+  }
+}
+
+async function travelTo(m) {
+  showError(null);
+  $('tpHint').textContent = `Walking to ${m.map}…`;
+  document.querySelectorAll('#tpList button').forEach((b) => { b.disabled = true; });
+  let outcome;
+  try {
+    const r = await rpc('travel.go', { map: m.map, volume: m.volume });
+    if (r.ok) {
+      log(`travelled to ${r.map}`, 'shiny');
+      outcome = r.stuck
+        ? `Arrived in ${r.map}, but the player looks stuck — try walking manually.`
+        : `Arrived in ${r.map}.`;
+    } else {
+      outcome = r.error || 'Could not get there.';
+    }
+  } catch (e) {
+    outcome = e.message || String(e);
+    showError(e);
+  } finally {
+    // reloading repaints the hint, so the outcome goes back afterwards --
+    // otherwise the reason a travel failed vanished before it could be read
+    await loadTeleport();
+    if (outcome) $('tpHint').textContent = outcome;
+  }
+}
+
+$('tpSearch').oninput = () => paintTeleport();
+$('btnTpRefresh').onclick = () => loadTeleport().catch(showError);

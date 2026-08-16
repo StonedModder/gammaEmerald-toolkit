@@ -802,6 +802,57 @@ class Session:
         return {"here": sorted(travelmod.loaded_worlds(self.game)),
                 "destinations": out}
 
+    def travel_maps(self, p):
+        """Every map in the game, with the ones you can reach right now marked.
+
+        Travel works by walking the player into one of the current level's own
+        teleport volumes, so only that level's exits actually go anywhere --
+        rewriting a volume's destination is ignored by the game (see
+        gamma/travel.py). The full list is still worth showing: it is how you
+        find a map by name, and it says plainly which ones are one hop away
+        instead of leaving the user to guess.
+        """
+        maps = []
+        try:
+            lib = self.library(p.get("version"))
+            # A few maps ship under more than one folder, so the raw level list
+            # repeats names -- deduped here, or the picker shows "MAP_Route101"
+            # twice with no way to tell the rows apart.
+            maps = sorted({s["name"] for s in
+                           lib.subjects("levels", limit=1000)["subjects"]})
+        except Exception as e:
+            log("travel.maps: could not list levels:", e)
+
+        reachable, here = {}, []
+        if self.game:
+            try:
+                pos = None
+                try:
+                    pos = nav.location(self.gp, self._pawn_addr())
+                except Exception:
+                    pass
+                for d in travelmod.destinations(self.game, from_pos=pos):
+                    reachable[d["map"]] = {
+                        "volume": d["addr"], "via": d["name"],
+                        "distance": (round(nav.dist2d(pos, d["pos"]))
+                                     if (pos and d["pos"]) else None),
+                    }
+                here = sorted(travelmod.loaded_worlds(self.game))
+            except Exception as e:
+                log("travel.maps: could not read destinations:", e)
+
+        # a reachable destination the level list did not know about still belongs
+        # in the list -- being able to GO there is the point
+        for name in reachable:
+            if name not in maps:
+                maps.append(name)
+
+        rows = [{"map": m, **(reachable.get(m) or {}),
+                 "reachable": m in reachable,
+                 "current": m in here} for m in sorted(maps)]
+        return {"here": here, "maps": rows,
+                "reachable_count": len(reachable), "total": len(rows)}
+
     def travel_go(self, p):
         """Walk into a teleport volume so the game moves the player itself."""
         self._need_game()
@@ -826,7 +877,9 @@ class Session:
             p = Player.find_in_worlds(self.game, self.layout, self.worlds)                 or Player.find(self.game, worlds_out=self.worlds)
             self.player = p
         if p is None:
-            raise RuntimeError("no player pawn — load a save first")
+            raise RuntimeError(
+                "no player pawn — the game needs to be in the overworld. "
+                "Load a save, and close any menu or battle first.")
         return p.addr
 
     def _battle_maps(self):
@@ -1097,6 +1150,7 @@ METHODS = {
     "hunt.stats": SESSION.hunt_stats,
     "input.tap": SESSION.input_tap,
     "travel.destinations": SESSION.travel_destinations,
+    "travel.maps": SESSION.travel_maps,
     "travel.go": SESSION.travel_go,
     "wild.state": SESSION.wild_state,
     "wild.goto_grass": SESSION.wild_goto_grass,

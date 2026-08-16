@@ -671,3 +671,31 @@ table.grid tr:hover td { background: var(--raised); }
 }
 .money-now::before { content: "\20BD"; opacity: .5; margin-right: 5px; font-size: 15px; }
 #moneyInput { width: 190px; }
+
+/* ---------------------------------------------------------------- teleport */
+.tp-here {
+  font-family: var(--mono); font-size: 11px; color: var(--ink-dim);
+  background: var(--ground); border: 1px solid var(--line);
+  border-radius: 7px; padding: 7px 10px; margin: 10px 0 8px;
+}
+.tp-here b { color: var(--normal); font-weight: 600; }
+.tp-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 320px; overflow-y: auto; padding: 2px;
+}
+.tp-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center;
+  background: var(--ground); border: 1px solid var(--line);
+  border-radius: 7px; padding: 7px 10px;
+}
+.tp-row .nm { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-row .sub { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); margin-top: 2px; }
+/* one hop away: actionable, and visibly so */
+.tp-row[data-reachable="true"] {
+  border-color: color-mix(in srgb, var(--normal) 45%, var(--line));
+  background: color-mix(in srgb, var(--normal) 7%, var(--ground));
+}
+.tp-row[data-reachable="true"] .nm { font-weight: 600; }
+.tp-row[data-reachable="false"] { opacity: .5; }
+.tp-row[data-current="true"] { border-color: var(--shiny); opacity: 1; }
+.tp-row[data-current="true"] .nm { color: var(--shiny); }
