@@ -62,6 +62,32 @@ def grass_tiles(game):
     return out
 
 
+# DO NOT MOVE THE PLAYER BY WRITING MEMORY. All of it was tried and measured:
+#
+#   GridMovementComponent (Outer is the pawn) holds the bookkeeping --
+#   CurrentGridPosition +0xB8 and TargetGridPosition +0xC4, both FIntVector,
+#   and cell == round(world / 64) exactly (grid (-457, 2335) <-> world
+#   (-29248, 149440)).
+#
+#   * Writing the grid cell alone does not move the actor at all. It only
+#     desyncs the component from the pawn, and a desynced component refuses
+#     every direction -- that is the "player can never move again" bug.
+#   * Writing the transform (RelativeLocation +0x140, ComponentToWorld +0x108,
+#     +0x210) DOES move the player, and they then fall through the world:
+#     traced Z going 64 -> -324 -> -5,937 -> -23,555 while the map streamed in.
+#     You arrive somewhere empty. Writing the cell as well does not save it.
+#   * The component means to place Z itself (bAutoDetectGroundZ +0x110,
+#     ActorHeightAboveGround +0x114, GroundTraceDistance +0x118 = 300), but the
+#     trace only runs on a real step, and 300 units does not reach the ground
+#     from wherever a long jump leaves you.
+#
+# Fast travel therefore fires the game's own teleport volume in place and lets
+# the game place the player -- see travel.travel().
+GRID_COMPONENT = "GridMovementComponent"
+CURRENT_GRID = 0xB8          # FIntVector
+TARGET_GRID = 0xC4           # FIntVector
+
+
 def dist2d(a, b) -> float:
     """Horizontal distance only.
 

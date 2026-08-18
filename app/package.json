@@ -1,6 +1,6 @@
 {
   "name": "gamma-toolkit",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -36,6 +36,14 @@
       {
         "from": "../tools/ffmpeg-LICENSE.txt",
         "to": "tools/ffmpeg-LICENSE.txt"
+      },
+      {
+        "from": "../tools/oodle-data-shared.dll",
+        "to": "tools/oodle-data-shared.dll"
+      },
+      {
+        "from": "../tools/binkadec",
+        "to": "tools/binkadec"
       }
     ],
     "asar": true,

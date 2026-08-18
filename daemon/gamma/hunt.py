@@ -485,65 +485,104 @@ class StarterHunter:
         return bool(self.player and self.player.alive())
 
     def find_pawn(self, window=24000, deep=False):
-        """Fast pawn lookup: compare the CLASS POINTER, newest objects first.
+        """The player pawn, or None.
 
-        Player.find resolves a name per object and costs ~7s over 258k objects.
-        Comparing one pointer per object and scanning backwards (a freshly spawned
-        pawn lands at the end of the array) is much cheaper.
+        This used to scan only the newest `window` object slots, on the theory
+        that a freshly spawned pawn lands at the end of the array. It does --
+        but it stays where it was created, and the array keeps growing: after a
+        few map transitions the object count went from 261k to 313k and the pawn
+        was no longer in the newest 24,000 slots, so the lookup started
+        returning None on a perfectly healthy game. That is the "it never finds
+        the player" report.
 
-        The remaining cost is one ReadProcessMemory per object to fetch its class
-        pointer -- 24,000 syscalls, ~6s, paid on every poll of the load wait. Those
-        objects barely change between polls, so each object's class is memoised.
-
-        The cache key is the object's whole 32-byte FUObjectItem, not its address:
-        UE recycles array slots, and a slot's SerialNumber lives in those bytes, so
-        a recycled slot simply misses the cache instead of returning the class of
-        the object that used to be there.
+        actors_of_class compares class POINTERS across every slot with the
+        per-object class memoised, so scanning all of them costs about as
+        little as scanning a window did -- without the blind spot.
         """
-        cls = self._class_ptr("BP_Brendan_C")
-        if cls:
-            g = self.game
-            total = g.gobjects["num_elements"]
-            per = 65536
-            scanned = 0
-            cache = self._pawncls
-            read_u64 = self.gp.read_u64
-            for ci in range(g.gobjects["num_chunks"] - 1, -1, -1):
-                chunk = g._chunks[ci]
-                n = min(per, total - ci * per)
-                if n <= 0:
-                    continue
-                items = self.gp.rpm(chunk, n * 32)
-                if not items:
-                    continue
-                for k in range(n - 1, -1, -1):
-                    base = k * 32
-                    o = struct.unpack_from("<Q", items, base)[0]
-                    scanned += 1
-                    if o:
-                        slot = bytes(items[base:base + 32])
-                        cp = cache.get(slot)
-                        if cp is None:
-                            cp = read_u64(o + 0x10) or 0
-                            if len(cache) < 400000:
-                                cache[slot] = cp
-                        if cp == cls:
-                            name = self.game.obj_name(o) or ""
-                            if not name.startswith("Default__"):
-                                self.player = Player(self.game, o, "BP_Brendan_C")
-                                return self.player
-                    if scanned >= window:
-                        break
-                if scanned >= window:
-                    break
-        # No full-scan fallback by default. Falling through to Player.find on every
-        # miss made each poll cost ~24s, which starved the load loop entirely.
-        if deep:
-            p = Player.find(self.game)
-            if p:
-                self.player = p
-            return p
+        cached = self.player
+        if cached is not None and cached.alive():
+            return cached
+        for obj in self.game.actors_of_class("BP_Brendan_C"):
+            self.player = Player(self.game, obj, "BP_Brendan_C")
+            return self.player
+        self.player = None
         return None
+
+    def widget_count(self, name: str) -> int:
+        return len(self.game.actors_of_class(name, skip_cdo=False))
+
+    def wait_for(self, predicate, timeout=15.0, poll=0.25, what="state"):
+        end = time.time() + timeout
+        while time.time() < end:
+            if self._stop:
+                return False
+            try:
+                if predicate():
+                    return True
+            except Exception:
+                pass
+            time.sleep(poll)
+        self.emit("timeout", {"waiting_for": what})
+        return False
+
+    def emit(self, kind, data=None):
+        payload = {"kind": kind, "stats": self.stats.as_dict()}
+        if data:
+            payload.update(data)
+        self.on_event(payload)
+
+    # ----------------------------------------------------------------- control
+    def set_rate(self, rate: int) -> bool:
+        ok = self.player.set("ShinyRate", rate)
+        self.stats.shiny_rate = self.player.shiny_rate
+        self.stats.odds = odds_from_rate(self.stats.shiny_rate)
+        self.emit("odds", {})
+        return ok
+
+    def refresh_stats(self):
+        if self.force_shiny:
+            self.stats.odds = "1/1 (forced)"
+            self.stats.shiny_rate = 0
+            return
+        if self.player:
+            self.stats.shiny_rate = self.player.shiny_rate
+            self.stats.odds = odds_from_rate(self.stats.shiny_rate)
+
+    def stop(self):
+        self._stop = True
+
+    # -------------------------------------------------------------------- loop
+    def select_starter(self, starter=None):
+        """Move the cursor to a specific ball.
+
+        Arrow keys DO work here, unlike the pause menu (which is mouse-only) --
+        verified: RIGHT from Treecko lands on Torchic. Pin left first so the
+        starting position never matters.
+        """
+        sid = starter or self.starter_id
+        slot = STARTER_BY_ID[sid]["slot"]
+        for _ in range(3):
+            if self._stop:
+                return
+            self.input.tap("left", settle=0.22)
+        for _ in range(slot):
+            if self._stop:
+                return
+            self.input.tap("right", settle=0.22)
+
+    # IA_ResetGame is bound to LeftShift chorded with R (IA_UseKeyItem). Posting
+    # VK_LSHIFT (0xA0) specifically matters -- generic VK_SHIFT (0x10) does not
+    # match the binding and silently does nothing.
+    VK_LSHIFT, VK_R = 0xA0, 0x52
+
+    def in_world(self) -> bool:
+        """True when a live player pawn exists. Two reads, no scan.
+
+        This replaced an object-count threshold that was simply wrong: after the
+        first save load the count stays ~257,900 even back at the main menu, so
+        "at title" read as False forever and every reset looked like a failure.
+        """
+        return bool(self.player and self.player.alive())
 
     def shift_reset(self, timeout=30) -> bool:
         """In-game soft reset: SHIFT+R. No relaunch, no focus steal.
@@ -579,6 +618,15 @@ class StarterHunter:
         if self.in_world() or self.find_pawn():
             return True
 
+        # Driving the title menu is the one place this can destroy something:
+        # the entry below Continue is New Game. Snapshot the save first so a
+        # mistake is recoverable, and stop immediately if one happens.
+        try:
+            from . import saves
+            self._save_guard = saves.create("before loading the save", auto=True)["id"]
+        except Exception:
+            self._save_guard = None
+
         end_t = time.time() + timeout
         while time.time() < end_t and not self._stop:
             # 1. wait for the title/menu to actually exist
@@ -590,16 +638,23 @@ class StarterHunter:
                 continue
             self.stats.phase("title", time.time() - t)
 
-            # 2. Press Start, then 3. Continue. Note W_GE_MainMenu_C EXISTS even at
-            # the Press Start screen (constructed but hidden), so it cannot be used
-            # to tell the two apart -- same trap as W_GE_Pause_C. Just press both.
+            # 2. Leave the Press Start splash, then 3. pick Continue.
+            #
+            # The Enter is only safe on the SPLASH. On the menu behind it, Enter
+            # activates whatever is highlighted -- which has closed the game,
+            # because Close Game is one of the four entries. W_GE_MainMenu_C is
+            # constructed even at the splash so it cannot tell them apart, but
+            # the menu bars are only drawn once the menu is really up: if four
+            # entries are on screen, the splash is already gone and Enter must
+            # not be sent.
             t = time.time()
             self.stats.status = "press start"
             self.emit("attempt")
-            self.input.tap("enter", settle=1.2)     # leave the Press Start splash
+            if not self.menu_is_up():
+                self.input.tap("enter", settle=1.2)
             self.stats.status = "loading save"
             self.emit("attempt")
-            self.click_frac(*self.CONTINUE_XY, settle=1.2)
+            self.press_continue()
 
             # Poll the cheap bounded scan. The deep scan is a LAST resort: it walks
             # every object and costs ~23s, so firing it early meant the pawn could
@@ -614,14 +669,19 @@ class StarterHunter:
             next_deep = time.time() + 25
             next_nudge = time.time() + 8
             while time.time() < deadline and not self._stop:
+                if self.started_new_game():
+                    self.stats.error = (
+                        "the title menu started a NEW GAME instead of loading. "
+                        "Stopped; your save was snapshotted first"
+                        + (" as %s" % self._save_guard if self._save_guard else ""))
+                    self.emit("error", {"error": self.stats.error})
+                    return False
                 if self.find_pawn():
                     break
                 now = time.time()
                 if now >= next_nudge:
                     next_nudge = now + 8
-                    # re-click Continue rather than posting Enter: on the title
-                    # menu Enter lands on Close Game
-                    self.click_frac(*self.CONTINUE_XY, settle=0.05)
+                    self.press_continue(settle=0.05)
                 if now >= next_deep:
                     next_deep = now + 25
                     if self.find_pawn(deep=True):
@@ -770,14 +830,96 @@ class StarterHunter:
     # client-area capture at 1920x1080 and stored as fractions so they survive a
     # resolution change. Arrow keys do NOT move this cursor -- it is mouse driven.
     YES_XY_PROMPT = (1692 / 1920, 508 / 1080)   # starter prompt -> YES
-    # Title menu: Continue / New Game / Options / CLOSE GAME, and it is mouse
-    # driven like the rest. A posted Enter here does NOT pick Continue -- it
-    # closed the game outright, three times, which is what "the game keeps
-    # quitting mid-hunt" was. Click the row instead.
-    CONTINUE_XY = (200 / 1920, 106 / 1080)
+    # Title menu: Continue / New Game / Options / CLOSE GAME. It is mouse driven,
+    # and a posted Enter here does NOT pick Continue -- it closed the game
+    # outright, three times, which is what "the game keeps quitting mid-hunt"
+    # was. It is also laid out differently per build and per resolution, so the
+    # row is measured on screen rather than stored as a fraction: clicking moves
+    # the highlight onto Continue, and space activates it.
     BALL_XY = {"treecko": (440 / 1920, 690 / 1080),
                "torchic": (960 / 1920, 690 / 1080),
                "mudkip":  (1480 / 1920, 690 / 1080)}
+
+    def press_continue(self, settle=1.2) -> bool:
+        """Pick Continue on the title menu, at whatever size the game runs at.
+
+        The menu is measured on screen, because its position and row height
+        differ between builds and resolutions -- a fraction that hits Continue
+        on one build hits Options on another, and New Game sits between them.
+
+        Continue is highlighted the moment the menu appears, so the first move
+        is to check that and just confirm. Clicking is a fallback, and it is a
+        real hazard: a click landed slightly off the row REMOVED the highlight,
+        and confirming after that started a New Game and overwrote a save. So
+        the confirm key is only ever sent while the top row is provably the
+        highlighted one, and doing nothing is the safe outcome -- ensure_in_game
+        simply tries again.
+        """
+        try:
+            from . import screen
+        except Exception:
+            return False
+        hwnd = getattr(self.input, "hwnd", None)
+        if not hwnd:
+            return False
+
+        # The menu animates in, so give it a moment to settle rather than
+        # judging the first frame -- checking too early cost a whole 60s retry.
+        rows = []
+        for _ in range(10):
+            rows = screen.menu_rows(hwnd)
+            if len(rows) == 4:
+                break
+            time.sleep(0.4)
+        if len(rows) != 4 or not screen.looks_like_menu(hwnd, rows):
+            return False                     # not the four-entry title menu
+
+        # Which entry is highlighted follows the mouse pointer, so where the
+        # user last left it decides. Move it onto Continue, then CHECK before
+        # committing: a click that lands off the row removes the highlight
+        # instead, and confirming blindly after that started a New Game once
+        # and quit the game another time.
+        highlighted = -1
+        for attempt in range(8):
+            # re-measure every time: the menu slides in, so coordinates taken
+            # one frame earlier can point at where the row used to be
+            fresh = screen.menu_rows(hwnd)
+            if len(fresh) == 4 and screen.looks_like_menu(hwnd, fresh):
+                rows = fresh
+            highlighted = screen.highlighted_row(hwnd, rows)
+            if highlighted == 0:
+                break
+            if attempt:
+                self.input.click(max(40, int(screen.client_size(hwnd)[0] * 0.05)),
+                                 (rows[0][0] + rows[0][1]) // 2, settle=0.3)
+            time.sleep(0.5)
+        if highlighted != 0:
+            self.stats.status = "title menu is not on Continue; press it yourself"
+            return False
+
+        self.stats.status = "loading save"
+        self.input.tap("space", settle=settle)
+        return True
+
+    def menu_is_up(self) -> bool:
+        """Is the four-entry title menu actually drawn right now?"""
+        try:
+            from . import screen
+            hwnd = getattr(self.input, "hwnd", None)
+            return bool(hwnd) and len(screen.menu_rows(hwnd)) == 4
+        except Exception:
+            return False
+
+    def started_new_game(self) -> bool:
+        """True if the title menu says a new game is under way."""
+        try:
+            found = self.game.actors_of_class("W_GE_MainMenu_C", limit=1)
+            if not found:
+                return False
+            flag = self.gp.rpm(found[0] + 0x5A4, 1)      # bIsStartingNewGame?
+            return bool(flag and flag[0])
+        except Exception:
+            return False
 
     def click_frac(self, fx, fy, settle=None):
         w, h = self.input.client_size()

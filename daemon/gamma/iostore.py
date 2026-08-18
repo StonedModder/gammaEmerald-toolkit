@@ -14,6 +14,7 @@ import ctypes
 import os
 import struct
 import sys
+import threading
 from dataclasses import dataclass
 
 MAGIC8 = b"\x2D\x3D\x3D\x2D\x2D\x3D\x3D\x2D"  # -==--==-
@@ -203,6 +204,7 @@ class CasExtractor:
         self.toc = toc
         self.oodle = oodle
         self.f = open(ucas_path, "rb")
+        self._lock = threading.Lock()
         self.block_size = toc.header.compression_block_size
 
     def extract_chunk(self, chunk_idx: int) -> bytes:
@@ -217,8 +219,10 @@ class CasExtractor:
         cur = offset
         for bi in range(first, last + 1):
             boff, csize, usize, midx = self.toc.blocks[bi]
-            self.f.seek(boff)
-            raw = self.f.read(csize)
+            # one handle, many request threads -- see PakReader._read
+            with self._lock:
+                self.f.seek(boff)
+                raw = self.f.read(csize)
             if midx == 0:
                 src = raw
             else:

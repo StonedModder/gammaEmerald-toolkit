@@ -21,6 +21,7 @@ import argparse
 import os
 import struct
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -200,6 +201,7 @@ def parse_directory_index(buf: bytes) -> list[tuple[str, int]]:
 class PakReader:
     def __init__(self, path: str | Path, aes_key: bytes | None = None, oodle: Oodle | None = None):
         self.path = Path(path)
+        self._lock = threading.Lock()
         self.f = open(self.path, "rb")
         self.f.seek(0, os.SEEK_END)
         self.size = self.f.tell()
@@ -231,8 +233,14 @@ class PakReader:
         self._load_index()
 
     def _read(self, off: int, size: int) -> bytes:
-        self.f.seek(off)
-        b = self.f.read(size)
+        # seek+read is two calls on one shared handle, and the daemon answers
+        # every request on its own thread. Scrolling the sprite grid fires
+        # dozens of reads at once; without this lock a thread could seek
+        # between another's seek and read, which came back as
+        # "Oodle decompress failed: 0" on whichever request lost the race.
+        with self._lock:
+            self.f.seek(off)
+            b = self.f.read(size)
         if len(b) != size:
             raise EOFError(f"short read at {off} want {size} got {len(b)}")
         return b

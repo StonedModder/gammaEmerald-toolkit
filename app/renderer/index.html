@@ -74,8 +74,8 @@
             <button class="chip" data-denom="65536">1/65536</button>
           </div>
           <p class="hint" id="oddsHint">
-            Sets the <b>wild encounter</b> roll: the Blueprint odds constants and
-            <code>ShinyRate</code> together. Type any number, drag, or pick a preset.
+            Sets the roll the game uses for <b>wild encounters</b>. Type any
+            number, drag, or pick a preset.
           </p>
         </div>
 
@@ -115,7 +115,10 @@
               it, and runs if it isn't what you asked for.
             </p>
           </div>
-          <button class="act" id="btnWildStop" disabled>Stop</button>
+          <div class="head-acts">
+            <button class="act" id="btnWildRefresh" disabled title="Re-read this area">Refresh area</button>
+            <button class="act" id="btnWildStop" disabled>Stop</button>
+          </div>
         </div>
 
         <div class="wild-where" id="wildWhere">Attach to see where you are.</div>

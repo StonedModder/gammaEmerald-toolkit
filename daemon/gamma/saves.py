@@ -155,8 +155,25 @@ def create(label: str = "", auto: bool = False) -> dict:
         "files": copied,
     }
     _meta_path(entry).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    if auto:
+        _prune_auto()
     return {"id": entry.name, "label": meta["label"], "files": copied,
             "created": meta["created"], "auto": meta["auto"]}
+
+
+def _prune_auto(keep: int = 5) -> None:
+    """Keep only the newest few automatic snapshots.
+
+    One is taken every time the save is loaded, at ~1.4 MB each, so without
+    this they pile up unbounded -- a single session of testing left ten. The
+    ones a user named are never touched.
+    """
+    autos = [b for b in list_backups() if b["auto"]]
+    for old in autos[keep:]:
+        try:
+            delete(old["id"])
+        except Exception:
+            pass
 
 
 def restore(backup_id: str, snapshot_first: bool = True) -> dict:

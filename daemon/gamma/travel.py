@@ -21,11 +21,11 @@ TWO THINGS THAT DO NOT WORK, recorded so they are not re-tried:
     the volume, so the player lands inside geometry -- the "stuck in a wall"
     bug. Trigger volumes where they stand.
 
-  * Writing the player's transform directly. RelativeLocation (+0x140),
-    ComponentToWorld's translation (+0x108) and +0x210 all hold the position,
-    and writing all three DOES move the player visually -- but the physics body
-    does not follow, so the player can no longer move at all, and it survives a
-    soft reset. Only a process restart recovers. Never do this.
+  * Moving the player onto the volume by writing their transform. It does move
+    them, and then they fall out of the world -- Z traced from 64 down through
+    -5,937 to -23,555 while the destination streamed in, so travel "succeeded"
+    into an empty zone. The player has to STAY where they are; see nav.py for
+    the full account of why no memory write can move them safely.
 
 So travel is limited to the destinations the current level's volumes point at.
 That is the game's own connectivity: hop to a neighbour, then use that level's
@@ -88,6 +88,22 @@ def destinations(game, from_pos=None):
     return sorted(best.values(), key=lambda v: v["map"])
 
 
+def disarm_stale(game) -> int:
+    """Clear `isOverlapping?` on every volume; returns how many were set.
+
+    A volume left armed by an interrupted travel makes the player look frozen
+    -- no direction moves them, in any map, until the flag is cleared. Cheap
+    insurance, and the only way out if a previous run died mid-travel.
+    """
+    gp = game.gp
+    cleared = 0
+    for v in game.actors_of_class(VOLUME_CLASS):
+        if gp.rpm(v + IS_OVERLAPPING, 1) == b"\x01":
+            gp.wpm(v + IS_OVERLAPPING, b"\x00")
+            cleared += 1
+    return cleared
+
+
 def loaded_worlds(game):
     gp = game.gp
     return {(game.obj_name(o) or "") for o in game.actors_of_class("World")
@@ -96,13 +112,12 @@ def loaded_worlds(game):
 
 def travel(game, gi, pawn_addr, volume_addr, timeout: float = 90.0,
            on_event=None) -> dict:
-    """Walk the player into a teleport volume and report where they land.
+    """Fast-travel through a teleport volume and report where the player lands.
 
-    Walking in is the whole trick. The game then does its own transition and
-    places the player properly -- VERIFIED: MeteorFalls -> Route 115, arriving
-    able to walk in all four directions. Forcing the volume's isOverlapping?
-    flag instead sometimes fires and sometimes does nothing, and moving the
-    volume to the player is what caused the "stuck in a wall" landing.
+    The player never moves under our control: the volume is told they are
+    standing in it, and the game runs its own transition and places them. That
+    placement is the entire point -- it is what puts the player on solid ground
+    at the far side instead of falling through an unloaded map.
     """
     gp = game.gp
 
@@ -119,31 +134,46 @@ def travel(game, gi, pawn_addr, volume_addr, timeout: float = 90.0,
     walker = nav.Walker(gp, game, gi, pawn_addr)
     start = walker.where()
     before = loaded_worlds(game)
-    emit("travel", map=info["map"], stage="walking",
+    emit("travel", map=info["map"], stage="teleporting",
          distance=round(nav.dist2d(start, info["pos"])) if start else None)
 
+    # Tell the volume the player is standing in it, and leave the player where
+    # they are. The volume does the rest, and the GAME places the player at the
+    # far side -- which is the only way the landing Z is right. Measured from
+    # 89,445 units away: fired after 2 steps, arrived on solid ground, able to
+    # walk in all four directions.
+    #
+    # PULSE the flag, never hold it. While `isOverlapping?` is true the game
+    # treats the player as mid-transition and ignores movement entirely, so a
+    # loop that re-armed it every pass froze the player and then waited forever
+    # for a step that could not happen. Arm, take one step, disarm.
+    disarm_stale(game)
     deadline = time.time() + timeout
     changed = None
-    while time.time() < deadline:
-        walker.walk_to(info["pos"], max_steps=12)
-        game.refresh()
-        now = loaded_worlds(game)
-        if now != before:
-            changed = now
-            break
-        pos = walker.where()
-        if pos and nav.dist2d(pos, info["pos"]) < nav.GRID * 0.5:
-            # standing on it and nothing happened; one more nudge through it
-            walker.step("a")
+    nudges = ("d", "a", "w", "s")
+    i = 0
+    try:
+        while time.time() < deadline:
+            gp.wpm(volume_addr + BRENDAN, struct.pack("<Q", pawn_addr))
+            gp.wpm(volume_addr + IS_OVERLAPPING, b"\x01")
+            walker.step(nudges[i % len(nudges)])
+            i += 1
             game.refresh()
-            if loaded_worlds(game) != before:
-                changed = loaded_worlds(game)
+            now = loaded_worlds(game)
+            if now != before:
+                changed = now
                 break
+            gp.wpm(volume_addr + IS_OVERLAPPING, b"\x00")
+            time.sleep(0.15)
+    finally:
+        if changed is None:
+            # a half-armed volume is what leaves the player unable to move
+            gp.wpm(volume_addr + IS_OVERLAPPING, b"\x00")
 
     if not changed:
         emit("travel", map=info["map"], stage="could not reach it")
         return {"ok": False, "map": info["map"],
-                "error": "could not reach the teleport volume"}
+                "error": "the teleport volume did not fire"}
 
     time.sleep(3.5)          # let the destination finish streaming in
     game.refresh()

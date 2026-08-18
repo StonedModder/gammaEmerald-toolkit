@@ -20,6 +20,7 @@ import re
 import struct
 import subprocess
 import sys
+import threading
 import tempfile
 import zlib
 from pathlib import Path
@@ -107,9 +108,19 @@ class AssetLibrary:
         self._paths = None
         self._entries = None
         self._by_dir = None
+        # Requests are answered on their own threads, so opening the container
+        # and building the 404k-entry index must happen exactly once: two
+        # threads racing here opened two readers and read the index twice.
+        self._open_lock = threading.RLock()
 
     # ------------------------------------------------------------------ open
     def reader(self):
+        if self._reader is not None:
+            return self._reader
+        with self._open_lock:
+            return self._open()
+
+    def _open(self):
         if self._reader is not None:
             return self._reader
         # Say what is wrong before something deep in the reader raises a bare
@@ -148,8 +159,11 @@ class AssetLibrary:
         """path -> entry, built once. Walking 404k entries per read cost ~3s a
         preview; the map turns every later read into a dict lookup."""
         if self._entries is None:
-            self._entries = dict(self.reader().iter_files())
-            self._paths = sorted(self._entries)
+            with self._open_lock:
+                if self._entries is None:
+                    entries = dict(self.reader().iter_files())
+                    self._paths = sorted(entries)
+                    self._entries = entries
         return self._entries
 
     def paths(self):

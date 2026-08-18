@@ -3,7 +3,6 @@ import struct
 
 from gamma.encounter import MAX_REGIONAL_DEX, parse_dex, relative, resolve_pokemon
 from gamma.money import iter_aligned_qwords
-from gamma.party import PokemonRecord, parse_party_bytes
 
 
 def test_parse_dex_leading_zeros():
@@ -36,45 +35,8 @@ def test_relative_rel32():
     assert struct.unpack("<i", blob)[0] == -100
 
 
-def _slot(primary=0x14FB, level=5, shiny=0, uuid=bytes(range(16))):
-    raw = bytearray(0x180)
-    struct.pack_into("<I", raw, 0x28, primary)
-    struct.pack_into("<I", raw, 0x34, level)
-    raw[0x164] = shiny
-    raw[0x170:0x180] = uuid
-    return bytes(raw)
-
-
-def test_pokemon_record_fields():
-    rec = PokemonRecord(0x10000, _slot(shiny=1, level=12))
-    assert rec.shiny == 1
-    assert rec.level == 12
-    assert rec.name == "Mudkip"
-    d = rec.as_dict(1)
-    assert d["slot"] == 1 and d["shiny"] is True
-
-
-def test_parse_party_bytes_accepts_valid_slots():
-    a = _slot(uuid=bytes(range(16)))
-    b = _slot(primary=0xC3BF, uuid=bytes(range(16, 32)))
-    blob = a + b
-
-    def read(addr, n):
-        off = addr - 0x20000
-        return blob[off:off + n]
-
-    party = parse_party_bytes(read, 0x20000, 2)
-    assert party is not None
-    assert [p.name for p in party] == ["Mudkip", "Poochyena"]
-
-
-def test_parse_party_bytes_rejects_bad_level():
-    blob = _slot(level=0)
-
-    def read(addr, n):
-        return blob[:n]
-
-    assert parse_party_bytes(read, 0x20000, 1) is None
+# The party record helpers that used to be tested here are gone: the party is
+# read through UE reflection now, and tests/test_party.py covers it.
 
 
 def test_iter_aligned_qwords():

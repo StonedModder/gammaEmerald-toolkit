@@ -59,9 +59,17 @@ async function assetsInit() {
     if (categories[0]) await pickCategory(categories[0], box.firstChild);
     } catch (e) {
     A.ready = false;
-    $('cats').innerHTML = '<div class="empty">Could not read the pak.</div>';
-    assetHint(String(e.message || e));
-    showError(e);
+    // First run has no game chosen yet. That is the normal starting state, not
+    // a failure, so say what to do instead of showing a red error.
+    const msg = cleanError(e);
+    const noGame = /no game data found|Choose game/i.test(msg);
+    $('cats').innerHTML = noGame
+      ? '<div class="empty">No game chosen yet.<br>Use <b>Choose game…</b> on the Hunt tab.</div>'
+      : '<div class="empty">Could not read the pak.</div>';
+    assetHint(noGame
+      ? 'Pick your PokemonEmerald.exe on the Hunt tab, then come back.'
+      : msg);
+    if (!noGame) showError(e);
   }
 }
 

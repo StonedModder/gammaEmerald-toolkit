@@ -29,9 +29,10 @@ _GAME_PATH_FILE = _SETTINGS_DIR / "game.json"
 # irrelevant once you have used Choose game... in the app.
 ROOT = Path(os.environ.get("GAMMA_ROOT") or Path.home() / "Gamma Emerald")
 
-# Oodle is needed only for Oodle-compressed paks. It ships with the engine and
-# is NOT redistributed here -- see tools/README.md. Point GAMMA_OODLE_DLL at a
-# copy, or drop one in tools/.
+# Oodle is needed for the Oodle-compressed pak. It is committed under tools/
+# and bundled into the portable build, so a user needs no setup -- resources.oodle()
+# finds the bundled copy first. The fallbacks below only matter for odd layouts;
+# GAMMA_OODLE_DLL still overrides everything.
 def _src_oodle():
     try:
         here = Path(__file__).resolve()
@@ -159,6 +160,24 @@ VERSIONS: dict[str, VersionSpec] = {
         pak=ROOT / "Windows" / "PokemonEmerald" / "Content" / "Paks" / "PokemonEmerald-Windows.pak",
         exe=ROOT / "Windows" / "PokemonEmerald" / "Binaries" / "Win64" / "PokemonEmerald.exe",
         notes="IoStore Zen packages; unencrypted; Development + Shipping + PDB",
+    ),
+    "bugfix": VersionSpec(
+        id="bugfix",
+        name="Bug Fix Update (2026-08-17)",
+        engine="5.6.0",
+        game_dir=ROOT / "EarlyAccessUpdate" / "BugFixUpdate" / "PokemonEmerald",
+        container="pak",
+        asset_format="legacy",
+        extract_dir=ROOT / "extracted-bugfix",
+        viewer_dir=ROOT / "viewer" / "bugfix",
+        sha8="34642383",
+        pak=ROOT / "EarlyAccessUpdate" / "BugFixUpdate" / "PokemonEmerald" / "Content" / "Paks" / "PokemonEmerald-Windows.pak",
+        exe=ROOT / "EarlyAccessUpdate" / "BugFixUpdate" / "PokemonEmerald" / "Binaries" / "Win64" / "PokemonEmerald.exe",
+        aes_key_env="GAMMA_EA_AES_KEY",
+        # Same key as Early Access -- verified by decrypting this build's index
+        # to 404,390 entries (Early Access had 404,134).
+        aes_key_hex="3615fd2021f60ad062b8b4d4895fcc581b0fdb2fc9172982129976cab1c4065d",
+        notes="legacy .pak, AES index, UE 5.6; code offsets differ from EA",
     ),
     "ea": VersionSpec(
         id="ea",

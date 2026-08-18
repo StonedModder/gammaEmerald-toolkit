@@ -37,9 +37,26 @@ function log(line, cls) {
   while (box.children.length > 400) box.removeChild(box.firstChild);
 }
 
+/* Electron wraps every rejected IPC call, and the daemon prefixes its own
+   exception class, so a missing game reached the user as
+   "Error invoking remote method 'rpc': Error: RuntimeError: no game data
+   found". Strip the plumbing and leave the sentence. */
+function cleanError(e) {
+  let t = String((e && e.message) || e || '');
+  t = t.replace(/^Error invoking remote method '[^']*':\s*/, '');
+  // the wrapper nests them -- "Error: RuntimeError: ..." -- so peel until clean
+  for (let i = 0; i < 4; i++) {
+    const next = t.replace(/^(Error|RuntimeError|ValueError|KeyError|OSError|TypeError):\s*/, '');
+    if (next === t) break;
+    t = next;
+  }
+  return t.trim();
+}
+
 function showError(e) {
-  $('err').textContent = e ? String(e.message || e) : '';
-  if (e) log(String(e.message || e), 'bad');
+  const text = e ? cleanError(e) : '';
+  $('err').textContent = text;
+  if (e) log(text, 'bad');
 }
 
 function setLink(on, text) {
@@ -250,7 +267,7 @@ function onAttached(r) {
           'tpSearch', 'btnTpRefresh', 'bagSearch', 'btnBagRefresh',
           'wShiny', 'wForce', 'wNature', 'wLvlMin', 'wLvlMax', 'wIvHP', 'wIvAtk',
           'wIvDef', 'wIvSpA', 'wIvSpD', 'wIvSpe', 'wIvTotal', 'wMaxEnc',
-          'btnWildStart', 'btnWildGrass'], true);
+          'btnWildStart', 'btnWildGrass', 'btnWildRefresh'], true);
   refreshOdds();
   loadMoney().catch((e) => log('money: ' + (e.message || e), 'bad'));
   loadEncounter().catch(() => {});
@@ -888,10 +905,10 @@ async function applyOdds() {
   } finally {
     $('btnOddsApply').disabled = false;
   }
-  log(`odds set to ${r.text} — ${r.patched} constants${r.rate_set ? ' + ShinyRate' : ''}`);
+  log(`wild shiny odds set to ${r.text}`);
   $('oddsHint').innerHTML =
-    `Now <b>${r.text}</b> — patched <b>${r.patched}</b> Blueprint constant${r.patched === 1 ? '' : 's'}` +
-    `${r.rate_set ? ' and <code>ShinyRate</code>' : ''}. Wild encounters only.`;
+    `Wild encounters are now <b>${r.text}</b>.` +
+    (r.note ? ` <b>${r.note}</b>` : '');
 }
 
 $('btnOddsApply').onclick = () => applyOdds().catch(showError);
@@ -914,15 +931,11 @@ async function refreshOdds() {
    rather than showing a stale number as if it were current. */
 function paintOddsState(r) {
   if (!r) return;
-  if (r.scanning) {
-    $('oddsHint').textContent =
-      'Reading the Blueprint odds constants… the controls work as soon as it finishes.';
-    return;
-  }
   if (r.denominator) paintOddsControl(r.denominator);
+  const src = r.patched ? 'set by the toolkit' : "the game's own rate";
   $('oddsHint').innerHTML =
-    `Currently <b>${r.text}</b> across <b>${r.sites}</b> Blueprint site${r.sites === 1 ? '' : 's'}. ` +
-    'Wild encounters only — the starter is the button below.';
+    `Wild encounters are <b>${r.text}</b> — ${src}. ` +
+    'The starter has its own button below.';
 }
 
 paintOddsControl(4096);
@@ -1214,8 +1227,8 @@ $('btnMoneySet').onclick = async () => {
 };
 
 /* --------------------------------------------------------------- teleport */
-/* Travel works by walking into one of THIS level's teleport volumes, so only
-   its exits actually go anywhere. The whole map list is still shown, because
+/* Travel fires one of THIS level's teleport volumes, so only its exits
+   actually go anywhere. The whole map list is still shown, because
    that is how you find a place by name -- the ones you can reach now are
    sorted to the top and the rest say why they are not clickable. */
 let TP_MAPS = [];
@@ -1299,7 +1312,7 @@ async function loadTeleport() {
 
 async function travelTo(m) {
   showError(null);
-  $('tpHint').textContent = `Walking to ${m.map}…`;
+  $('tpHint').textContent = `Travelling to ${m.map}…`;
   document.querySelectorAll('#tpList button').forEach((b) => { b.disabled = true; });
   let outcome;
   try {
@@ -1450,6 +1463,8 @@ function setWildRunning(on) {
   $('btnWildStart').disabled = on || !attached;
   $('btnWildStop').disabled = !on;
   $('btnWildGrass').disabled = on || !attached;
+  // refreshing drops the cached pawn, which the running hunt is holding
+  $('btnWildRefresh').disabled = on || !attached;
   $('btnWildStart').dataset.running = String(on);
 }
 
@@ -1472,6 +1487,26 @@ $('btnWildStop').onclick = async () => {
   try { await rpc('wild.stop'); } catch (e) { showError(e); }
   setWildRunning(false);
   log('wild hunt stopped');
+};
+
+/* Walking into a new area streams in a new route and new grass, and the daemon
+   is reading a cached object array — so the panel keeps showing the species
+   from wherever you set out until something re-reads it. */
+$('btnWildRefresh').onclick = async () => {
+  showError(null);
+  const btn = $('btnWildRefresh');
+  btn.disabled = true;
+  $('wildWhere').textContent = 'Reading this area…';
+  try {
+    const st = await rpc('wild.state', { refresh: true });
+    paintWildState(st);
+    paintWildFilterHint();
+    log(st.route ? `area refreshed — ${st.route}` : 'area refreshed');
+  } catch (e) {
+    showError(e);
+  } finally {
+    btn.disabled = !attached;
+  }
 };
 
 $('btnWildGrass').onclick = async () => {

@@ -1,8 +1,13 @@
 # tools/
 
-Three third-party binaries live here. **None are committed to this repo.** The
-portable release bundles ffmpeg; the other two are proprietary and not mine to
-redistribute. Everything else in the toolkit works without them.
+Three third-party binaries live here, and all three are bundled into the
+portable release so it works with no setup.
+
+`oodle-data-shared.dll` and `binkadec/` are committed; without them a portable
+build cannot read the pak or export a cry, and telling every user to go and find
+them defeats the point of shipping one exe. ffmpeg is not committed -- it is
+115 MB and freely downloadable -- but the build does bundle it, so fetch it
+before packaging (see below).
 
 ## `ffmpeg.exe` — needed for GIF and MP3 export
 
@@ -21,6 +26,9 @@ by the packaging step; without them the build still succeeds but the release
 will not have ffmpeg in it.
 
 ## `oodle-data-shared.dll` — needed to read the Early Access pak
+
+**Already here and already bundled.** The rest of this section is only for
+rebuilding it from an engine install.
 
 The EA `.pak` is Oodle-compressed, so previews and extraction need Oodle to
 decompress a block. Without it the Assets tab still lists all 404k entries and

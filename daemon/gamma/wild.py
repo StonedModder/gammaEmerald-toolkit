@@ -203,6 +203,76 @@ def route_for_world(game, world_names):
     return matches[0]
 
 
+def actor_world(game, actor: int) -> str:
+    """Name of the streamed level an actor belongs to.
+
+    Outer(actor) is the ULevel ("PersistentLevel"), and Outer(level) is the
+    world -- MAP_Route115, MAP_PetalburgWoods and so on. The player pawn is no
+    use for this: it lives in MAP_Hoenn_Persistant wherever you walk.
+    """
+    gp = game.gp
+    level = gp.read_u64(actor + 0x20)
+    world = gp.read_u64(level + 0x20) if level else 0
+    return (game.obj_name(world) or "") if world else ""
+
+
+ROUTE_SUBSYSTEM = "RouteSubsystem"
+CURRENT_ROUTE = 0x50            # RouteSubsystem::CurrentRoute (UObject*)
+
+
+def current_route(game):
+    """The route the GAME says the player is on, or (None, None).
+
+    This is the whole answer, and it is why the panel used to lag an area
+    behind. Matching loaded levels cannot work: walking from Route 103 to
+    Meteor Falls leaves five worlds resident -- the persistent one, the route
+    you left, the one you arrived in, and two neighbours -- so first-match-wins
+    kept reporting Route_103. The grass tiles nearest the player are a decent
+    second opinion, but a cave with no grass has none to give.
+    """
+    gp = game.gp
+    for sub in game.actors_of_class(ROUTE_SUBSYSTEM):
+        obj = gp.read_u64(sub + CURRENT_ROUTE)
+        if obj:
+            name = game.obj_name(obj)
+            if name:
+                return name, obj
+    return None, None
+
+
+def _same_place(route_name: str, world_names) -> bool:
+    """Route_115 belongs to MAP_Route115, allowing for the naming differences."""
+    def norm(x):
+        return "".join(c for c in x.lower() if c.isalnum()).removeprefix("map")
+    want = norm(route_name).removeprefix("route")
+    return any(norm(w).removeprefix("route") == want for w in world_names)
+
+
+def route_for_position(game, pos, world_names, max_distance=12000.0):
+    """Where the player is: the game's own answer, then grass, then levels."""
+    from . import nav
+
+    name, obj = current_route(game)
+    # The game keeps the last route when you walk somewhere that has none --
+    # Meteor Falls has no RouteData at all -- and reporting Route 115's grass
+    # while standing in a cave offers species you cannot catch there. Trust it
+    # only while that route's own map is still loaded.
+    if obj and name and _same_place(name, world_names):
+        return name, obj
+
+    if pos:
+        nearest_d, nearest_world = None, ""
+        for actor, tile_pos in nav.grass_tiles(game):
+            d = nav.dist2d(pos, tile_pos)
+            if nearest_d is None or d < nearest_d:
+                nearest_d, nearest_world = d, actor_world(game, actor)
+        if nearest_world and nearest_d is not None and nearest_d <= max_distance:
+            name, obj = route_for_world(game, [nearest_world])
+            if obj:
+                return name, obj
+    return route_for_world(game, world_names)
+
+
 def read_mon(game, actor: int):
     """Species, shiny, nature and IVs of one battle Pokemon."""
     gp = game.gp
@@ -513,9 +583,14 @@ class WildHunter:
                 return True
         return not self.in_encounter()
 
-    def available_species(self):
-        """What can appear in the grass here, straight from the route's table."""
-        name, obj = route_for_world(self.game, loaded_worlds(self.game))
+    def available_species(self, pos=None):
+        """What can appear in the grass here, straight from the route's table.
+
+        `pos` (the player) picks the route by where they stand; without it this
+        falls back to whichever loaded level matches first, which goes wrong as
+        soon as more than one route is streamed in.
+        """
+        name, obj = route_for_position(self.game, pos, loaded_worlds(self.game))
         if not obj:
             return {"route": None, "encounters": []}
         rate = struct.unpack("<f", self.gp.rpm(obj + ROUTE_OFFSETS["EncounterRate"], 4))[0]

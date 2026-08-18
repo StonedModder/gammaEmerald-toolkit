@@ -86,7 +86,7 @@ class Session:
         self.encounter = None
         self.party = None
         self.money = None
-        self._cheat_busy = False
+        self._cheat_busy = set()      # which cheats are mid-job
         self.wild = None
         self.wild_thread = None
 
@@ -147,6 +147,16 @@ class Session:
         return {"processes": out}
 
     # ------------------------------------------------------------------- bot
+    def _best_pid(self):
+        """The real game when several PokemonEmerald.exe are running.
+
+        The launcher stub stays alive beside the game it starts, so picking the
+        first name match attached to a process with no object array at all.
+        The game is the one holding hundreds of megabytes.
+        """
+        found = self.processes(None)["processes"]
+        return found[0]["pid"] if found else None
+
     def attach(self, p):
         """Attach and return quickly.
 
@@ -157,7 +167,7 @@ class Session:
         user has picked something to do. The scan addresses are also reused
         between attaches, because they do not move for the life of the process.
         """
-        pid = p.get("pid")
+        pid = p.get("pid") or self._best_pid()
         self.version = p.get("version", self.version)
         self.gp = GameProcess(pid=pid, name="PokemonEmerald").attach()
 
@@ -169,8 +179,8 @@ class Session:
 
         self.layout = layouts.BY_VERSION.get(self.version, layouts.UE56)
         self.shiny = ShinyEngine(self.game, self.layout)
-        self.encounter = EncounterHook(self.gp)
-        self.party = PartyTool(self.gp)
+        self.encounter = EncounterHook(self.gp, self.game)
+        self.party = PartyTool(self.gp, self.game)
         self.money = MoneyScanner(self.gp)
         self.worlds = []
         self.player = None
@@ -351,9 +361,16 @@ class Session:
             raise RuntimeError("not attached")
 
     def _cheat_job(self, event, fn):
-        if self._cheat_busy:
-            raise RuntimeError("a cheat scan is already running")
-        self._cheat_busy = True
+        """Run one cheat's slow work on a thread, one job per cheat at a time.
+
+        Busy is tracked PER CHEAT. A single shared flag meant the party read --
+        fired automatically on attach -- blocked the encounter hook, so turning
+        on the wild modifier answered "a cheat scan is already running" and the
+        UI sat on "hooking…" until the party scan finished.
+        """
+        if event in self._cheat_busy:
+            raise RuntimeError("that cheat is already working")
+        self._cheat_busy.add(event)
 
         def work():
             try:
@@ -364,7 +381,7 @@ class Session:
                 log(event, "failed:", traceback.format_exc())
                 emit(event, {"kind": "error", "error": f"{type(e).__name__}: {e}"})
             finally:
-                self._cheat_busy = False
+                self._cheat_busy.discard(event)
 
         threading.Thread(target=work, daemon=True).start()
         return {"started": True}
@@ -555,36 +572,60 @@ class Session:
         return True
 
     def odds_get(self, _p):
+        """The wild shiny odds the game is actually rolling.
+
+        Read from the native roll, not from Blueprint floats: the roll is
+        `shiny iff rand(0, N-1) == 0`, so N is the whole answer and no scan is
+        needed to report it.
+        """
         self._need_game()
-        if not self.shiny.sites:
-            if self._scan_sites_async():
-                return {"scanning": True, "denominator": None, "sites": 0,
-                        "text": "scanning…"}
-        prob = self.shiny.current_odds()
+        self._need_cheats()
+        wild_odds = self.encounter.wild_odds()
+        denom = wild_odds.get("denominator")
         rate = None
         pl = self.player if (self.player and self.player.alive()) else None
         if pl:
             rate = pl.shiny_rate
-        denom = None
-        if prob and prob > 0:
-            denom = int(round(1.0 / prob))
-        elif rate is not None:
-            denom = int(rate) + 1
-        return {"denominator": denom, "probability": prob, "shiny_rate": rate,
-                "text": odds_text(prob or 0), "sites": len(self.shiny.sites)}
+        return {
+            "denominator": denom,
+            "patched": wild_odds.get("patched"),
+            "probability": (1.0 / denom) if denom else None,
+            "shiny_rate": rate,
+            "text": odds_text(1.0 / denom) if denom else "unknown",
+            "sites": len(self.shiny.sites),
+        }
 
     def odds_set(self, p):
+        """Set the wild shiny odds to 1 in `denominator`.
+
+        The native denominator is the one that decides wild encounters. The
+        Blueprint sites are still written when they exist, because the starter
+        roll is a Blueprint float, but they are no longer what this reports:
+        on the bug-fix build the only 0.01 floats belong to NPC footsteps.
+        """
         self._need_game()
+        self._need_cheats()
         denom = max(1, int(p["denominator"]))
-        if not self.shiny.sites:
-            self.shiny.scan()
-        patched = self.shiny.set_odds(1.0 / denom)
+        result = self.encounter.set_wild_odds(denom)
+        blueprint = 0
+        if self.shiny.sites:
+            try:
+                blueprint = self.shiny.set_odds(1.0 / denom)
+            except Exception as e:
+                log("blueprint odds sites not written:", e)
         rate_ok = False
         pl = self.player if (self.player and self.player.alive()) else None
         if pl:
             rate_ok = bool(pl.set("ShinyRate", denom - 1))
-        return {"denominator": denom, "patched": patched, "rate_set": rate_ok,
-                "text": odds_text(1.0 / denom)}
+        return {"denominator": denom, "patched": result.get("patched"),
+                "site": result.get("site"), "blueprint_sites": blueprint,
+                "rate_set": rate_ok, "text": odds_text(1.0 / denom)}
+
+    def odds_reset(self, _p):
+        """Put the game's own odds back."""
+        self._need_game()
+        self._need_cheats()
+        return self.encounter.clear_wild_odds()
 
     # ----------------------------------------------------------------- hunt
     def hunt_start(self, p):
@@ -646,7 +687,7 @@ class Session:
         self.input = gameinput.GameInput(hwnd, pid=pid)
         self.shiny = ShinyEngine(self.game, self.layout)
         self.encounter = EncounterHook(self.gp)
-        self.party = PartyTool(self.gp)
+        self.party = PartyTool(self.gp, self.game)
         self.money = MoneyScanner(self.gp)
         self.worlds = []
         self.player = None
@@ -911,9 +952,19 @@ class Session:
                 self._bmaps = set()
         return self._bmaps
 
-    def wild_state(self, _p):
-        """Everything the wild panel needs, cheap enough to poll."""
+    def wild_state(self, p=None):
+        """Everything the wild panel needs, cheap enough to poll.
+
+        `refresh` re-reads the object array first. Walking into a new area
+        streams in new grass tiles and a new route actor, and the cached array
+        does not know about any of them -- so the panel kept showing the
+        species from wherever you set out.
+        """
         self._need_game()
+        if (p or {}).get("refresh"):
+            self.game.refresh()
+            self.player = None          # the pawn is replaced by a map change
+            self.worlds = []
         m = BattleManager.find(self.game)
         pos = None
         tiles = []
@@ -927,7 +978,7 @@ class Session:
         avail = {"route": None, "encounters": []}
         try:
             w = WildHunter(self.game, self.layout, self.input, battle_maps=bm)
-            avail = w.available_species()
+            avail = w.available_species(pos)          # the route you stand in
         except Exception:
             pass
         return {
@@ -1139,6 +1190,7 @@ METHODS = {
     "rate.set": SESSION.rate_set,
     "odds.get": SESSION.odds_get,
     "odds.set": SESSION.odds_set,
+    "odds.reset": SESSION.odds_reset,
     "starter.state": SESSION.starter_state,
     "starter.force": SESSION.starter_force,
     "saves.info": SESSION.saves_info,

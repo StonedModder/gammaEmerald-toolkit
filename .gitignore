@@ -27,10 +27,11 @@ catalog.json
 # --- third-party binaries ---------------------------------------------------
 # Oodle (Epic/RAD) and binkadec (RAD) are proprietary and not redistributed
 # here. tools/README.md says where to get them and where to put them.
-tools/*.dll
-tools/binkadec/
-# ffmpeg is bundled into the portable release, not committed -- it is 115 MB
-# and freely downloadable. tools/README.md says which build and where from.
+# Oodle and binkadec ARE committed: without them a portable build cannot read
+# the pak or export a cry, and asking every user to go and find them defeats
+# the point of a portable exe. They are small (1 MB / 32 MB).
+# ffmpeg stays out -- 115 MB, and freely downloadable; tools/README.md says
+# which build the release bundles and where it comes from.
 tools/ffmpeg.exe
 tools/ffmpeg-LICENSE.txt
 

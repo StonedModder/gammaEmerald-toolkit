@@ -33,6 +33,7 @@ hidden += [
     "gamma.resources",
     "gamma.saves",
     "gamma.items",
+    "gamma.screen",
 ]
 
 a = Analysis(

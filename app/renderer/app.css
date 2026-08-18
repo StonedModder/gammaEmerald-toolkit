@@ -267,6 +267,8 @@ label.chk input { accent-color: var(--normal); width: 14px; height: 14px; }
 .cheat-head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 10px; }
 .cheat-head h2 { margin-bottom: 6px; }
 .cheat-head .hint { margin: 0; line-height: 1.4; }
+/* actions sit together at the right of a card head, whatever their number */
+.head-acts { margin-left: auto; display: flex; gap: 8px; align-items: center; flex: none; }
 .card.cheat { display: grid; gap: 10px; }
 .card.cheat[data-on="true"] { border-color: color-mix(in srgb, var(--shiny) 40%, var(--line)); }
 

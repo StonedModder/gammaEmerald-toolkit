@@ -1,7 +1,7 @@
 # Gamma Toolkit
 
 <p align="center">
-  <a href="https://github.com/StonedModder/gammaEmerald-toolkit/releases"><img src="https://img.shields.io/badge/release-v0.0.2-0ea5e9?style=flat-square" alt="release v0.0.2"></a>
+  <a href="https://github.com/StonedModder/gammaEmerald-toolkit/releases"><img src="https://img.shields.io/badge/release-v0.0.3-0ea5e9?style=flat-square" alt="release v0.0.3"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/StonedModder/gammaEmerald-toolkit?style=flat-square" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20x64-0078D4?style=flat-square&logo=windows&logoColor=white" alt="Windows x64">
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
@@ -48,7 +48,7 @@ Pick your game executable in the app. The Early Access pak key is built in, so t
 
 ### Portable release (recommended)
 
-Download **`GammaToolkit-v0.0.2-portable.exe`** from [Releases](https://github.com/StonedModder/gammaEmerald-toolkit/releases) and run it. Nothing to install — no Python, no Node, and ffmpeg is included, so GIF and MP3 export work out of the box.
+Download **`GammaToolkit-v0.0.3-portable.exe`** from [Releases](https://github.com/StonedModder/gammaEmerald-toolkit/releases) and run it. Nothing to install — no Python, no Node, and ffmpeg is included, so GIF and MP3 export work out of the box.
 
 ### From source
 
@@ -87,7 +87,7 @@ Leave **talk to the bag first** ticked if you're standing in front of the bag. U
 
 **Encounter odds** sets the wild shiny rate — anything from `1/1` to `1/65536`, or type your own number. It doesn't affect the starter; use **Force this starter shiny** for that.
 
-**Wild hunt** does the same job out in the grass. It walks to the nearest grass, paces until something appears, reads it, and runs from anything you didn't ask for.
+**Wild hunt** does the same job out in the grass. It walks to the nearest grass, paces until something appears, reads it, and runs from anything you didn't ask for. The card shows the route you're on and what can appear there; after walking somewhere new press **Refresh area** to read it again.
 
 Filters are all optional — leave them blank and it stops at any shiny:
 
@@ -106,9 +106,9 @@ You don't type anything: the dex number comes from the game itself. Pokémon tha
 
 **Bag** — everything you're carrying, plus every item this build defines (46 on Early Access). Search for one, type a number and press **Add** to give yourself some, **Set** to change how many you hold, or 0 to throw them away. The × on a chip drops that item entirely.
 
-**Teleport** — search any map by name; the box takes plain text or a regex like `cave|forest` or `^MAP_Route1`. Maps with an exit in the area you're standing in are highlighted and listed first, and pressing **Go** walks you into it. Step outside before using it — from inside a building there's no exit to walk into.
+**Teleport** — search any map by name; the box takes plain text or a regex like `cave|forest` or `^MAP_Route1`. Maps with an exit in the area you're standing in are highlighted and listed first, and pressing **Go** takes you straight there — it triggers the game's own transition, so you arrive on solid ground and can walk immediately. Step outside before using it: from inside a building there's no exit to travel through.
 
-**Party shiny** — scan your party, then make a slot shiny. A copy of your party is written to `%LOCALAPPDATA%\GammaToolkit\party_backups` before anything changes.
+**Party shiny** — reads your party straight from the game and makes a slot shiny. A copy of the record is written to `%LOCALAPPDATA%\GammaToolkit\party_backups` before anything changes.
 
 ## Assets tab
 
@@ -154,6 +154,35 @@ tools/        ffmpeg + optional oodle-data-shared.dll / binkadec
 
 The UI talks to `daemon/main.py` over JSON-RPC on stdio — there's no HTTP server and nothing listening on a port. Override the interpreter with `GAMMA_PYTHON` if you need to.
 
+## What's new in 0.0.3
+
+- **Teleport actually teleports.** It fires the game's own map transition instead of walking, so you arrive on solid ground rather than falling through an unloaded map.
+- **Wild shiny odds work.** The odds control now changes the roll the game really uses. Previously it wrote to Blueprint constants that turned out to belong to NPC footsteps.
+- **Party reads instantly.** It used to scan gigabytes of memory for about a minute and could still come back with the wrong answer and a name like `species-0x5d`. Names, levels, natures and IVs are read straight from the game.
+- **The wild hunt card follows you.** It shows the route you're actually standing on, with a **Refresh area** button for when you walk somewhere new.
+- **Sprites no longer fail while the grid loads.** Scrolling the Pokémon picker could throw `Oodle decompress failed: 0`; that was several sprites being read at once through one file handle.
+- Cheats no longer block each other, and attaching picks the real game when the launcher is still running beside it.
+
+## If something goes wrong
+
+**Windows warns about an unknown publisher.** The exe isn't code-signed. Choose
+*More info*, then *Run anyway* — or right-click the file, *Properties*, *Unblock*.
+
+**The Assets tab says no game chosen.** Use **Choose game...** on the Hunt tab and
+pick your `PokemonEmerald.exe`. Everything else is worked out from it, and the
+choice is remembered.
+
+**Attach is greyed out.** The game has to be running first, then press **Refresh**.
+
+**It closes straight away and never opens a window.** This happens when Windows'
+`USERPROFILE` points at a folder that doesn't exist. Chromium checks it before
+any app code runs, so every Electron app (VS Code, Discord) fails the same way on
+such a machine. Launching it once like this gets around it:
+
+```bat
+GammaToolkit-v0.0.3-portable.exe --user-data-dir="%LOCALAPPDATA%\GammaToolkit\ui"
+```
+
 ## Credits
 
 **[Ionic28](https://github.com/Ionic28)** worked out the Pokémon spawning and encounter cheats, the money cheat, the memory-tools template the daemon is built on, and how to fetch and list the party. Those parts of the toolkit come from that work.
@@ -168,4 +197,4 @@ Pokémon Gamma Emerald, Pokémon, and related assets belong to their respective 
 
 [MIT](LICENSE) for this toolkit's source.
 
-The portable release bundles **ffmpeg** (LGPL v2.1+, unmodified, from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)); its licence ships beside it as `tools/ffmpeg-LICENSE.txt` and the source is available from [ffmpeg.org](https://ffmpeg.org/download.html). The other third-party binaries described under `tools/` stay under their own licences and are not included.
+The portable release bundles **ffmpeg** (LGPL v2.1+, unmodified, from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)); its licence ships beside it as `tools/ffmpeg-LICENSE.txt` and the source is available from [ffmpeg.org](https://ffmpeg.org/download.html). **Oodle** (Epic/RAD) and **binkadec** (RAD) ship under `tools/` so the app can read the pak and export cries with no setup; both stay under their own licences and are included unmodified.
