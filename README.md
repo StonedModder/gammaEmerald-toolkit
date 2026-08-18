@@ -27,6 +27,7 @@ Fan-made. Reads and writes the memory of a locally running game, and reads that 
 | **Teleport** | Search every map in the game and travel to the ones with an exit nearby. |
 | **Bag** | See what you're carrying and give yourself any item the game has. |
 | **Money** | Read and set your money. |
+| **Guaranteed catch** | Makes the next ball land. Writes the catch-rate and caught flags; puts them back when you turn it off. |
 | **Party shiny** | Make a Pokémon in your party shiny. Writes a backup of the party first. |
 | **Save backups** | Snapshot your save as often as you like, name them, and restore any one later. |
 | **Assets** | Browse everything in the pak — Pokémon, trainers, NPCs, buildings, maps, music, cries. Preview sprites, animations and audio, then extract as PNG, GIF or MP3. |
@@ -37,7 +38,7 @@ Typical hunt cycle is about **30 seconds per reset** (~110–125/hour), nearly a
 
 | | Original | Early Access |
 |---|---|---|
-| Date | 2025-05-31 | 2026-08-15 |
+| Date | 2025-05-31 | 2026-08-15 (also 08-17, 08-18) |
 | Engine | UE 5.3.2 | UE 5.6.1 |
 | Container | IoStore (unencrypted) | `.pak` v11 (AES-encrypted index) |
 | Packages | Zen `.uasset` | legacy `.uasset` + `.uexp` |
@@ -107,6 +108,8 @@ You don't type anything: the dex number comes from the game itself. Pokémon tha
 **Bag** — everything you're carrying, plus every item this build defines (46 on Early Access). Search for one, type a number and press **Add** to give yourself some, **Set** to change how many you hold, or 0 to throw them away. The × on a chip drops that item entirely.
 
 **Teleport** — search any map by name; the box takes plain text or a regex like `cave|forest` or `^MAP_Route1`. Maps with an exit in the area you're standing in are highlighted and listed first, and pressing **Go** takes you straight there — it triggers the game's own transition, so you arrive on solid ground and can walk immediately. Step outside before using it: from inside a building there's no exit to travel through.
+
+**Guaranteed catch** — flip the switch and the next ball you throw will catch. It writes the catch-rate and caught flags the game already has; turn it off and those values go back.
 
 **Party shiny** — reads your party straight from the game and makes a slot shiny. A copy of the record is written to `%LOCALAPPDATA%\GammaToolkit\party_backups` before anything changes.
 

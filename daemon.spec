@@ -25,6 +25,7 @@ hidden += [
     "gamma.versions",
     "gamma.layouts",
     "gamma.encounter",
+    "gamma.catch",
     "gamma.party",
     "gamma.money",
     "gamma.nav",

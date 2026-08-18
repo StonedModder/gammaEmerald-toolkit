@@ -262,7 +262,7 @@ function onAttached(r) {
   enable(['btnForce', 'btnReadRoll', 'btnScan', 'btnAll', 'btnVerify',
           'btnRestore', 'btnFindPlayer', 'oddsDenom', 'oddsSlider',
           'btnOddsApply', 'btnOddsRestore',
-          'encOn', 'encShiny', 'encSearch', 'btnPartyScan',
+          'encOn', 'encShiny', 'encSearch', 'catchOn', 'btnPartyScan',
           'moneyInput', 'btnMoneySet', 'btnMoneyRead',
           'tpSearch', 'btnTpRefresh', 'bagSearch', 'btnBagRefresh',
           'wShiny', 'wForce', 'wNature', 'wLvlMin', 'wLvlMax', 'wIvHP', 'wIvAtk',
@@ -271,6 +271,7 @@ function onAttached(r) {
   refreshOdds();
   loadMoney().catch((e) => log('money: ' + (e.message || e), 'bad'));
   loadEncounter().catch(() => {});
+  loadCatch().catch(() => {});
   loadTeleport().catch(() => {});
   loadBag().catch(() => {});
   loadWild().catch(() => {});
@@ -612,6 +613,34 @@ $('encOn').onchange = async () => {
   }
 };
 
+async function loadCatch() {
+  if (!attached) return;
+  try {
+    const r = await rpc('catch.status');
+    $('catchOn').checked = !!r.enabled;
+    $('catchCard').dataset.on = String(!!r.enabled);
+    $('catchOn').disabled = !attached;
+    $('catchHint').textContent = r.enabled
+      ? `On — ${r.sites.length} catch site${r.sites.length === 1 ? '' : 's'} patched.`
+      : 'Flip the switch. Every ball will catch until you turn it off.';
+  } catch (e) {
+    $('catchHint').textContent = e.message || String(e);
+  }
+}
+
+$('catchOn').onchange = async () => {
+  showError(null);
+  const on = $('catchOn').checked;
+  $('catchHint').textContent = on ? 'Patching catch functions…' : 'Restoring catch functions…';
+  try {
+    if (on) await rpc('catch.set', { enabled: true });
+    else await rpc('catch.clear');
+  } catch (e) {
+    $('catchOn').checked = !on;
+    showError(e);
+  }
+};
+
 $('encShiny').onchange = () => {
   const name = encSel.name;
   if (name) fillFront($('encPreview'), name, $('encShiny').checked, true);
@@ -729,6 +758,30 @@ window.gamma.onEvent((msg) => {
       $('encHint').textContent =
         `Hooked dex ${data.dex}${data.shiny ? ' · shiny' : ''}. Trigger a wild encounter, then turn this off.`;
       log(`encounter hooked dex=${data.dex} shiny=${data.shiny}`, 'shiny');
+    }
+    return;
+  }
+  if (event === 'catch') {
+    if (data.kind === 'working') {
+      $('catchHint').textContent = 'Finding catch functions…';
+      return;
+    }
+    if (data.kind === 'error') {
+      $('catchOn').checked = false;
+      $('catchCard').dataset.on = 'false';
+      $('catchHint').textContent = data.error;
+      showError(new Error(data.error));
+      return;
+    }
+    if (data.kind === 'done') {
+      $('catchOn').checked = !!data.enabled;
+      $('catchCard').dataset.on = String(!!data.enabled);
+      const n = (data.sites || []).length;
+      $('catchHint').textContent = data.enabled
+        ? `On — ${n} catch site${n === 1 ? '' : 's'} patched. Throw a ball.`
+        : 'Off. Catch rates are back to normal.';
+      log(data.enabled ? `guaranteed catch on (${n} sites)` : 'guaranteed catch off',
+          data.enabled ? 'shiny' : undefined);
     }
     return;
   }

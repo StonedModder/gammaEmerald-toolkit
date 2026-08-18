@@ -28,22 +28,15 @@ _CACHE = {}
 
 def find_pid(name="PokemonEmerald.exe", min_mb=500):
     """The real game process, not the tiny launcher shim."""
-    import subprocess
+    from gamma.memory import list_named_processes
     try:
-        raw = subprocess.check_output(
-            ["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
-            stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+        found = list_named_processes(name)
     except Exception:
         return None
-    best = None
-    for line in raw.splitlines():
-        parts = [p.strip('"') for p in line.split('","')]
-        if len(parts) < 5 or not parts[0].lower().startswith("pokemonemerald"):
-            continue
-        mb = int(parts[4].replace(",", "").replace(" K", "") or 0) // 1024
-        if mb >= min_mb and (best is None or mb > best[1]):
-            best = (int(parts[1]), mb)
-    return best[0] if best else None
+    for proc in found:
+        if proc["mem_mb"] >= min_mb:
+            return proc["pid"]
+    return None
 
 
 def attach(hunter=None):

@@ -11,8 +11,10 @@ PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_OPERATION = 0x0008
 PROCESS_VM_WRITE = 0x0020
+TH32CS_SNAPPROCESS = 0x2
 TH32CS_SNAPMODULE = 0x8
 TH32CS_SNAPMODULE32 = 0x10
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
 MEM_PRIVATE = 0x20000
@@ -102,15 +104,10 @@ class GameProcess:
         if pid:
             self.pid = pid
         if self.pid is None:
-            import subprocess
-            out = subprocess.check_output(["tasklist", "/FO", "CSV", "/NH"])
-            for line in out.decode().splitlines():
-                parts = [p.strip('"') for p in line.split('","')]
-                if len(parts) >= 2 and parts[0].lower().startswith(self.name.lower()):
-                    self.pid = int(parts[1])
-                    break
-            if self.pid is None:
+            found = list_named_processes(self.name)
+            if not found:
                 raise RuntimeError(f"process {self.name} not found")
+            self.pid = found[0]["pid"]
         # ALL_ACCESS: encounter hooks need VirtualProtectEx on executable pages.
         self.handle = OpenProcess(PROCESS_ALL_ACCESS, False, self.pid)
         if not self.handle:
@@ -256,6 +253,85 @@ class GameProcess:
             self.handle = None
 
 
+class PROCESSENTRY32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", ctypes.c_char * 260),
+    ]
+
+
+class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("PageFaultCount", wintypes.DWORD),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+    ]
+
+
+def list_named_processes(name="PokemonEmerald"):
+    """Running processes whose exe starts with `name`, biggest working set first.
+
+    Uses Toolhelp, not tasklist: French Windows prints memory as '4 888 832 Ko'
+    and decoding that as UTF-8 made attach fail with a parse error.
+    """
+    prefix = name.lower()
+    if prefix.endswith(".exe"):
+        prefix = prefix[:-4]
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == -1:
+        raise ctypes.WinError(ctypes.get_last_error())
+    out = []
+    try:
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        if not kernel32.Process32First(snap, ctypes.byref(pe)):
+            return []
+        while True:
+            exe = pe.szExeFile.decode("utf-8", "replace").lower()
+            if exe.startswith(prefix):
+                pid = int(pe.th32ProcessID)
+                out.append({"pid": pid, "mem_mb": _working_set_mb(pid)})
+            if not kernel32.Process32Next(snap, ctypes.byref(pe)):
+                break
+    finally:
+        CloseHandle(snap)
+    out.sort(key=lambda p: -p["mem_mb"])
+    for p in out:
+        p["likely_game"] = p["mem_mb"] > 500
+    return out
+
+
+def _working_set_mb(pid: int) -> int:
+    handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, False, pid)
+    if not handle:
+        handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+    if not handle:
+        return 0
+    try:
+        counters = PROCESS_MEMORY_COUNTERS()
+        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+        if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return 0
+        return int(counters.WorkingSetSize) // (1024 * 1024)
+    finally:
+        CloseHandle(handle)
+
+
 class MODULEENTRY32(ctypes.Structure):
     _fields_ = [
         ("dwSize", wintypes.DWORD),
@@ -273,7 +349,14 @@ class MODULEENTRY32(ctypes.Structure):
 
 kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
 kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+kernel32.Process32First.restype = wintypes.BOOL
+kernel32.Process32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
+kernel32.Process32Next.restype = wintypes.BOOL
+kernel32.Process32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
 kernel32.Module32First.restype = wintypes.BOOL
 kernel32.Module32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(MODULEENTRY32)]
 kernel32.Module32Next.restype = wintypes.BOOL
 kernel32.Module32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(MODULEENTRY32)]
+psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+psapi.GetProcessMemoryInfo.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(PROCESS_MEMORY_COUNTERS), wintypes.DWORD]
