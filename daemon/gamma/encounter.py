@@ -32,6 +32,10 @@ import ctypes
 #     before (+0x54 and +0x31B), which is itself a check that the right
 #     functions were found.
 #
+# The 2026-08-18 exe kept that whole block and slid it +0x4A0. Confirmed in the
+# file: hook is still `call INIT`, roll/rand bytes match, and get_by_dex still
+# looks up the TMap at this+0x180 with stride 0x30.
+#
 # Which set to use is decided by reading the bytes in the live process, not by
 # a version string or a file hash: a build we have never seen fails loudly
 # instead of writing a jump into the middle of an unrelated instruction.
@@ -45,6 +49,11 @@ BUILD_OFFSETS = {
         "hook": 0x0A657F95, "init": 0x0A669B60, "get_by_dex": 0x0A664EA0,
         "shiny_roll": 0x0A657FE9, "shiny_rand": 0x0A669E7B,
         "species_db_vtable": None,      # found by class instead; see _owner_by_class
+    },
+    "ea-2026-08-18": {
+        "hook": 0x0A658435, "init": 0x0A66A000, "get_by_dex": 0x0A665340,
+        "shiny_roll": 0x0A658489, "shiny_rand": 0x0A66A31B,
+        "species_db_vtable": None,
     },
 }
 

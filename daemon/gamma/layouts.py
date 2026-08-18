@@ -80,7 +80,7 @@ UE56 = Layout(
 )
 
 # keyed by the version id used in versions.py
-BY_VERSION = {"original": UE53, "ea": UE56}
+BY_VERSION = {"original": UE53, "bugfix": UE56, "ea": UE56, "custom": UE56}
 
 
 def for_engine(engine_string: str) -> Layout:

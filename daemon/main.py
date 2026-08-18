@@ -45,6 +45,7 @@ from gamma import wild as wildmod                # noqa: E402
 from gamma import travel as travelmod            # noqa: E402
 from gamma.wild import WildHunter, BattleManager  # noqa: E402
 from gamma.encounter import EncounterHook, resolve_pokemon  # noqa: E402
+from gamma.catch import CatchHook             # noqa: E402
 from gamma.party import PartyTool             # noqa: E402
 from gamma.money import MoneyScanner, read_money, write_money  # noqa: E402
 from gamma import items as itemsmod            # noqa: E402
@@ -84,6 +85,7 @@ class Session:
         self._ue_cache = {}   # module base -> discovered addresses, reused on re-attach
         self.game_exe = versions.load_game_exe()
         self.encounter = None
+        self.catch = None
         self.party = None
         self.money = None
         self._cheat_busy = set()      # which cheats are mid-job
@@ -127,23 +129,12 @@ class Session:
 
     def processes(self, _p):
         """Running game processes the user can attach to."""
-        import subprocess
-        out = []
+        from gamma.memory import list_named_processes
         try:
-            raw = subprocess.check_output(
-                ["tasklist", "/FI", "IMAGENAME eq PokemonEmerald.exe", "/FO", "CSV", "/NH"],
-                stderr=subprocess.DEVNULL).decode("utf-8", "replace")
-            for line in raw.splitlines():
-                parts = [p.strip('"') for p in line.split('","')]
-                if len(parts) >= 5 and parts[0].lower().startswith("pokemonemerald"):
-                    mem_kb = int(parts[4].replace(",", "").replace(" K", "") or 0)
-                    out.append({"pid": int(parts[1]), "mem_mb": mem_kb // 1024})
+            out = list_named_processes("PokemonEmerald")
         except Exception as e:
-            log("tasklist failed:", e)
-        # the launcher shim is tiny; the real game is the big one
-        out.sort(key=lambda p: -p["mem_mb"])
-        for p in out:
-            p["likely_game"] = p["mem_mb"] > 500
+            log("process list failed:", e)
+            out = []
         return {"processes": out}
 
     # ------------------------------------------------------------------- bot
@@ -180,6 +171,7 @@ class Session:
         self.layout = layouts.BY_VERSION.get(self.version, layouts.UE56)
         self.shiny = ShinyEngine(self.game, self.layout)
         self.encounter = EncounterHook(self.gp, self.game)
+        self.catch = CatchHook(self.gp, self.game)
         self.party = PartyTool(self.gp, self.game)
         self.money = MoneyScanner(self.gp)
         self.worlds = []
@@ -357,7 +349,7 @@ class Session:
 
     def _need_cheats(self):
         self._need_game()
-        if not self.encounter or not self.party or not self.money:
+        if not self.encounter or not self.catch or not self.party or not self.money:
             raise RuntimeError("not attached")
 
     def _cheat_job(self, event, fn):
@@ -456,6 +448,23 @@ class Session:
     def encounter_clear(self, _p):
         self._need_cheats()
         return self.encounter.clear()
+
+    def catch_status(self, _p):
+        self._need_cheats()
+        return self.catch.status()
+
+    def catch_set(self, p):
+        self._need_cheats()
+        enabled = bool(p.get("enabled", True))
+
+        def work():
+            return self.catch.set(enabled)
+
+        return self._cheat_job("catch", work)
+
+    def catch_clear(self, _p):
+        self._need_cheats()
+        return self.catch.clear()
 
     def party_list(self, p):
         self._need_cheats()
@@ -686,7 +695,8 @@ class Session:
             return False
         self.input = gameinput.GameInput(hwnd, pid=pid)
         self.shiny = ShinyEngine(self.game, self.layout)
-        self.encounter = EncounterHook(self.gp)
+        self.encounter = EncounterHook(self.gp, self.game)
+        self.catch = CatchHook(self.gp, self.game)
         self.party = PartyTool(self.gp, self.game)
         self.money = MoneyScanner(self.gp)
         self.worlds = []
@@ -768,20 +778,11 @@ class Session:
 
     @staticmethod
     def _game_pids():
-        import subprocess
-        out = []
+        from gamma.memory import list_named_processes
         try:
-            raw = subprocess.check_output(
-                ["tasklist", "/FI", "IMAGENAME eq PokemonEmerald.exe", "/FO", "CSV", "/NH"],
-                stderr=subprocess.DEVNULL).decode("utf-8", "replace")
-            for line in raw.splitlines():
-                parts = [q.strip('"') for q in line.split('","')]
-                if len(parts) >= 5 and parts[0].lower().startswith("pokemonemerald"):
-                    mb = int(parts[4].replace(",", "").replace(" K", "") or 0) // 1024
-                    out.append((int(parts[1]), mb))
+            return [(p["pid"], p["mem_mb"]) for p in list_named_processes("PokemonEmerald")]
         except Exception:
-            pass
-        return out
+            return []
 
     def launch_game(self, p):
         """Start the game and (optionally) attach once it is up."""
@@ -1202,6 +1203,9 @@ METHODS = {
     "encounter.species": SESSION.encounter_species,
     "encounter.set": SESSION.encounter_set,
     "encounter.clear": SESSION.encounter_clear,
+    "catch.status": SESSION.catch_status,
+    "catch.set": SESSION.catch_set,
+    "catch.clear": SESSION.catch_clear,
     "party.list": SESSION.party_list,
     "party.set_shiny": SESSION.party_set_shiny,
     "items.catalogue": SESSION.items_catalogue,

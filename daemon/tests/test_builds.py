@@ -37,6 +37,18 @@ def test_builds_do_not_share_a_hook_address():
     assert len(hooks) == len(set(hooks))
 
 
+def test_aug18_is_a_slide_of_the_bugfix_block():
+    """The 2026-08-18 exe kept the Aug 17 layout and moved the whole block."""
+    old = BUILD_OFFSETS["bugfix-2026-08-17"]
+    new = BUILD_OFFSETS["ea-2026-08-18"]
+    delta = new["hook"] - old["hook"]
+    assert delta == 0x4A0
+    for key in ("init", "get_by_dex", "shiny_roll", "shiny_rand"):
+        assert new[key] - old[key] == delta, key
+    assert new["shiny_roll"] - new["hook"] == 0x54
+    assert new["shiny_rand"] - new["init"] == 0x31B
+
+
 def _menu(width, height, block_top, row_height, highlight=None, rows=4):
     """A fake window: dark menu bars on a light background."""
     px = bytearray(b"\xC8" * (width * height * 4))
